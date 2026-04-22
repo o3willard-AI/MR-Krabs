@@ -10,9 +10,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, Optional, Tuple
 
 
 class CircuitState(Enum):
@@ -47,13 +45,13 @@ class CircuitBreaker:
     _failures: int = field(default=0, init=False)
     _successes: int = field(default=0, init=False)
     _total: int = field(default=0, init=False)
-    _opened_at: Optional[float] = field(default=None, init=False)
+    _opened_at: float | None = field(default=None, init=False)
     _half_open_in_flight: int = field(default=0, init=False)
     _half_open_epoch: int = field(default=0, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     @property
-    def key(self) -> Tuple[str, str]:
+    def key(self) -> tuple[str, str]:
         return (self.provider, self.model)
 
     @property
@@ -70,7 +68,10 @@ class CircuitBreaker:
             if self._state == CircuitState.CLOSED:
                 return True
             if self._state == CircuitState.OPEN:
-                if self._opened_at is not None and time.monotonic() - self._opened_at >= self.cooldown_seconds:
+                if (
+                    self._opened_at is not None
+                    and time.monotonic() - self._opened_at >= self.cooldown_seconds
+                ):
                     self._transition_to_half_open()
                     return True
                 return False
@@ -108,7 +109,7 @@ class CircuitBreaker:
                 self._total += 1
                 self._check_threshold()
 
-    def get_state_info(self) -> Dict:
+    def get_state_info(self) -> dict:
         """Get current state information for observability."""
         with self._lock:
             return {
@@ -173,7 +174,7 @@ class CircuitBreakerRegistry:
         cooldown_seconds: int = 60,
         half_open_max: int = 3,
     ):
-        self._breakers: Dict[Tuple[str, str], CircuitBreaker] = {}
+        self._breakers: dict[tuple[str, str], CircuitBreaker] = {}
         self._lock = threading.Lock()
         self._defaults = {
             "failure_threshold": failure_threshold,
@@ -195,7 +196,7 @@ class CircuitBreakerRegistry:
                     )
         return self._breakers[key]
 
-    def get_all_state(self) -> Dict[str, Dict]:
+    def get_all_state(self) -> dict[str, dict]:
         """Get state info for all circuit breakers."""
         result = {}
         with self._lock:

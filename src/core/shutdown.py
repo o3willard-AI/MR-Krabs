@@ -9,10 +9,10 @@ Handles SIGTERM/SIGINT to:
 
 from __future__ import annotations
 
+import logging
 import signal
 import threading
-import logging
-from typing import Callable, List, Optional
+from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class GracefulShutdown:
     """
 
     def __init__(self):
-        self._callbacks: List[Callable] = []
+        self._callbacks: list[Callable] = []
         self._shutdown_event = threading.Event()
         self._original_sigterm = signal.getsignal(signal.SIGTERM)
         self._original_sigint = signal.getsignal(signal.SIGINT)
@@ -74,7 +74,7 @@ class GracefulShutdown:
         self._callbacks.clear()
 
 
-_shutdown_handler: Optional[GracefulShutdown] = None
+_shutdown_handler: GracefulShutdown | None = None
 
 
 def get_shutdown_handler() -> GracefulShutdown:

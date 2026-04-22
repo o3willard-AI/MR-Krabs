@@ -11,7 +11,6 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional
 
 
 @dataclass
@@ -61,15 +60,15 @@ class RateLimiter:
     and should be tuned based on provider documentation.
     """
 
-    DEFAULT_RATES: Dict[str, float] = {
+    DEFAULT_RATES: dict[str, float] = {
         "openrouter": 10.0,
         "openai": 50.0,
         "anthropic": 50.0,
         "lmstudio": 100.0,
     }
 
-    def __init__(self, rates: Optional[Dict[str, float]] = None):
-        self._buckets: Dict[str, TokenBucket] = {}
+    def __init__(self, rates: dict[str, float] | None = None):
+        self._buckets: dict[str, TokenBucket] = {}
         self._lock = threading.Lock()
         self._rates = rates or dict(self.DEFAULT_RATES)
 

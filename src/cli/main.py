@@ -1,27 +1,24 @@
 #!/usr/bin/env python3
 """Enhanced CLI for Multi-Tier Orchestrator."""
 
-import sys
-import os
-import json
 import argparse
+import sys
 from pathlib import Path
-from datetime import datetime
 
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.core.orchestrator import LLMOrchestrator, MODELS
-from src.core.metrics import MetricsCollector
-from src.core.cost import CostTracker, Budget, TokenCount
-from src.cli.commands import cmd_init, cmd_doctor, cmd_dry_run, cmd_stats, cmd_explain, cmd_explain
+from src.cli.commands import cmd_doctor, cmd_dry_run, cmd_explain, cmd_init, cmd_stats  # noqa: E402
+from src.core.metrics import MetricsCollector  # noqa: E402
+from src.core.orchestrator import MODELS, LLMOrchestrator  # noqa: E402
 
 try:
+    from rich import box
     from rich.console import Console
     from rich.panel import Panel
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
     from rich.table import Table
-    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
-    from rich import box
+
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
@@ -37,7 +34,9 @@ class OrchestratorCLI:
 
     def print_header(self):
         if self.use_rich:
-            self.console.print(Panel.fit("[bold blue]Multi-Tier LLM Orchestrator[/bold blue]", border_style="blue"))
+            self.console.print(
+                Panel.fit("[bold blue]Multi-Tier LLM Orchestrator[/bold blue]", border_style="blue")
+            )
         else:
             print("=" * 60)
             print("Multi-Tier LLM Orchestrator")
@@ -56,12 +55,17 @@ class OrchestratorCLI:
             self.console.print(f"\n[bold]Executing Task {task_id} with Tier {tier}[/bold]")
             self.console.print(f"Model: [cyan]{MODELS[tier]['model']}[/cyan]")
 
-            with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"), BarColumn(), console=self.console) as progress:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                console=self.console,
+            ) as progress:
                 task = progress.add_task(f"Running {tier}...", total=None)
                 try:
                     result = self.orchestrator.execute_task(task_id, tier, context)
                     progress.update(task, completed=True)
-                except Exception as e:
+                except Exception:
                     progress.update(task, completed=True)
                     raise
         else:
@@ -70,7 +74,10 @@ class OrchestratorCLI:
             result = self.orchestrator.execute_task(task_id, tier, context)
 
         if result["success"]:
-            self.print_status(f"Completed in {result['duration_seconds']:.1f}s (attempt {result['attempts']})", True)
+            self.print_status(
+                f"Completed in {result['duration_seconds']:.1f}s (attempt {result['attempts']})",
+                True,
+            )
             if result.get("tool_results"):
                 tr = result["tool_results"]
                 if self.use_rich:
@@ -78,10 +85,22 @@ class OrchestratorCLI:
                 for tool in tr.get("tool_results", []):
                     icon = "\u2713" if tool.get("success") else "\u2717"
                     print(f"  {icon} {tool['tool']}('{tool.get('path', '')}')")
-            self.metrics.record_task(task_id, tier, True, result["duration_seconds"], result["attempts"], tr.get("tools_executed", 0))
+            self.metrics.record_task(
+                task_id,
+                tier,
+                True,
+                result["duration_seconds"],
+                result["attempts"],
+                tr.get("tools_executed", 0),
+            )
         else:
-            self.print_status(f"Failed after {result['attempts']} attempts: {result.get('error', 'Unknown')}", False)
-            self.metrics.record_task(task_id, tier, False, result.get("duration_seconds", 0), result["attempts"])
+            self.print_status(
+                f"Failed after {result['attempts']} attempts: {result.get('error', 'Unknown')}",
+                False,
+            )
+            self.metrics.record_task(
+                task_id, tier, False, result.get("duration_seconds", 0), result["attempts"]
+            )
 
         if result.get("success") and output_file:
             Path(output_file).write_text(result.get("output", ""))

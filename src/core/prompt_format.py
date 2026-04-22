@@ -8,7 +8,6 @@ by different models (ChatML, Llama, OpenAI chat, etc.).
 from __future__ import annotations
 
 from enum import Enum
-from typing import Dict, List, Optional
 
 
 class PromptFormat(Enum):
@@ -19,7 +18,7 @@ class PromptFormat(Enum):
     RAW = "raw"
 
 
-FORMAT_REGISTRY: Dict[str, PromptFormat] = {
+FORMAT_REGISTRY: dict[str, PromptFormat] = {
     "openai/": PromptFormat.OPENAI_CHAT,
     "anthropic/": PromptFormat.OPENAI_CHAT,
     "google/": PromptFormat.OPENAI_CHAT,
@@ -39,9 +38,9 @@ def detect_format(model_id: str) -> PromptFormat:
 
 
 def format_messages(
-    messages: List[Dict[str, str]],
+    messages: list[dict[str, str]],
     target_format: PromptFormat,
-    system_prompt: Optional[str] = None,
+    system_prompt: str | None = None,
 ) -> str:
     """Format messages for the target prompt format.
 
@@ -65,13 +64,14 @@ def format_messages(
         return _format_raw(messages)
 
 
-def _format_openai_chat(messages: List[Dict[str, str]]) -> str:
+def _format_openai_chat(messages: list[dict[str, str]]) -> str:
     """OpenAI chat format (JSON array of messages)."""
     import json
+
     return json.dumps(messages)
 
 
-def _format_chatml(messages: List[Dict[str, str]]) -> str:
+def _format_chatml(messages: list[dict[str, str]]) -> str:
     """ChatML format: <|im_start|>role\ncontent<|im_end|>"""
     parts = []
     for msg in messages:
@@ -82,11 +82,13 @@ def _format_chatml(messages: List[Dict[str, str]]) -> str:
     return "\n".join(parts)
 
 
-def _format_llama(messages: List[Dict[str, str]], system_prompt: Optional[str] = None) -> str:
+def _format_llama(messages: list[dict[str, str]], system_prompt: str | None = None) -> str:
     """Llama 3 Instruct format: <|start_header_id|>role<|end_header_id|>\n\ncontent<|eot_id|>"""
     parts = []
     if system_prompt:
-        parts.append("<|start_header_id|>system<|end_header_id|>\n\n" + system_prompt + "<|eot_id|>")
+        parts.append(
+            "<|start_header_id|>system<|end_header_id|>\n\n" + system_prompt + "<|eot_id|>"
+        )
     for msg in messages:
         role = msg.get("role", "user")
         content = msg.get("content", "")
@@ -97,7 +99,7 @@ def _format_llama(messages: List[Dict[str, str]], system_prompt: Optional[str] =
     return "\n".join(parts)
 
 
-def _format_alpaca(messages: List[Dict[str, str]], system_prompt: Optional[str] = None) -> str:
+def _format_alpaca(messages: list[dict[str, str]], system_prompt: str | None = None) -> str:
     """Alpaca format: ### Instruction/### Input/### Response"""
     parts = []
     if system_prompt:
@@ -113,7 +115,7 @@ def _format_alpaca(messages: List[Dict[str, str]], system_prompt: Optional[str] 
     return "\n".join(parts)
 
 
-def _format_raw(messages: List[Dict[str, str]]) -> str:
+def _format_raw(messages: list[dict[str, str]]) -> str:
     """Raw format: concatenate all messages with role labels."""
     parts = []
     for msg in messages:

@@ -12,14 +12,13 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
-from src.core.cost import Budget, FailureMode, Decimal
-
+from src.core.cost import Budget, Decimal, FailureMode
 
 CURRENT_CONFIG_VERSION = "1.0"
 
-DEFAULT_CONFIG: Dict[str, Any] = {
+DEFAULT_CONFIG: dict[str, Any] = {
     "version": CURRENT_CONFIG_VERSION,
     "budget": {
         "daily_limit_usd": "10.00",
@@ -56,7 +55,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
-def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
+def load_config(config_path: Path | None = None) -> dict[str, Any]:
     """Load configuration from TOML file, merging with defaults.
 
     Args:
@@ -83,7 +82,7 @@ def load_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     return config
 
 
-def _validate_config_version(user_config: Dict[str, Any]) -> None:
+def _validate_config_version(user_config: dict[str, Any]) -> None:
     """Validate config version and raise if incompatible."""
     user_version = user_config.get("version", "1.0")
     if user_version != CURRENT_CONFIG_VERSION:
@@ -94,7 +93,7 @@ def _validate_config_version(user_config: Dict[str, Any]) -> None:
         )
 
 
-def _validate_config_version(user_config: Dict[str, Any]) -> None:
+def _validate_config_version(user_config: dict[str, Any]) -> None:
     """Validate config version and raise if incompatible."""
     user_version = user_config.get("version", "1.0")
     if user_version != CURRENT_CONFIG_VERSION:
@@ -105,7 +104,7 @@ def _validate_config_version(user_config: Dict[str, Any]) -> None:
         )
 
 
-def config_to_budget(config: Dict[str, Any]) -> Budget:
+def config_to_budget(config: dict[str, Any]) -> Budget:
     """Convert config dict to Budget object."""
     budget_cfg = config.get("budget", {})
     return Budget(
@@ -118,7 +117,7 @@ def config_to_budget(config: Dict[str, Any]) -> Budget:
     )
 
 
-def _find_config() -> Optional[Path]:
+def _find_config() -> Path | None:
     """Search for config file in common locations."""
     candidates = [
         Path.cwd() / ".cost_orchestrator.toml",
@@ -131,7 +130,7 @@ def _find_config() -> Optional[Path]:
     return None
 
 
-def _deep_copy(d: Dict) -> Dict:
+def _deep_copy(d: dict) -> dict:
     """Deep copy a nested dict."""
     result = {}
     for k, v in d.items():
@@ -144,7 +143,7 @@ def _deep_copy(d: Dict) -> Dict:
     return result
 
 
-def _deep_merge(base: Dict, override: Dict) -> Dict:
+def _deep_merge(base: dict, override: dict) -> dict:
     """Deep merge override into base. Override values take precedence."""
     result = _deep_copy(base)
     for key, value in override.items():

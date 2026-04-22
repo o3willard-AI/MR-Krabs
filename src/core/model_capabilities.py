@@ -9,12 +9,12 @@ before routing tasks to models.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
 
 
 @dataclass
 class ModelCapability:
     """Capabilities of a specific model."""
+
     model_id: str
     context_window: int = 8192
     max_output_tokens: int = 4096
@@ -22,7 +22,9 @@ class ModelCapability:
     supports_vision: bool = False
     supports_json_mode: bool = False
     supports_streaming: bool = True
-    known_languages: Set[str] = field(default_factory=lambda: {"python", "javascript", "typescript"})
+    known_languages: set[str] = field(
+        default_factory=lambda: {"python", "javascript", "typescript"}
+    )
     provider: str = ""
     is_free_tier: bool = False
 
@@ -37,7 +39,7 @@ class ModelCapability:
         return True
 
 
-MODEL_REGISTRY: Dict[str, ModelCapability] = {
+MODEL_REGISTRY: dict[str, ModelCapability] = {
     "qwen/qwen3.5-397b-a17b": ModelCapability(
         model_id="qwen/qwen3.5-397b-a17b",
         context_window=131072,
@@ -64,7 +66,16 @@ MODEL_REGISTRY: Dict[str, ModelCapability] = {
         max_output_tokens=8192,
         supports_tool_calling=True,
         supports_streaming=True,
-        known_languages={"python", "javascript", "typescript", "java", "go", "rust", "cpp", "csharp"},
+        known_languages={
+            "python",
+            "javascript",
+            "typescript",
+            "java",
+            "go",
+            "rust",
+            "cpp",
+            "csharp",
+        },
         provider="openrouter",
     ),
     "minimax/minimax-m2.7": ModelCapability(
@@ -82,7 +93,18 @@ MODEL_REGISTRY: Dict[str, ModelCapability] = {
         max_output_tokens=8192,
         supports_tool_calling=True,
         supports_streaming=True,
-        known_languages={"python", "javascript", "typescript", "java", "go", "rust", "cpp", "csharp", "ruby", "php"},
+        known_languages={
+            "python",
+            "javascript",
+            "typescript",
+            "java",
+            "go",
+            "rust",
+            "cpp",
+            "csharp",
+            "ruby",
+            "php",
+        },
         provider="openrouter",
     ),
     "anthropic/claude-opus-4.6": ModelCapability(
@@ -91,7 +113,20 @@ MODEL_REGISTRY: Dict[str, ModelCapability] = {
         max_output_tokens=8192,
         supports_tool_calling=True,
         supports_streaming=True,
-        known_languages={"python", "javascript", "typescript", "java", "go", "rust", "cpp", "csharp", "ruby", "php", "swift", "kotlin"},
+        known_languages={
+            "python",
+            "javascript",
+            "typescript",
+            "java",
+            "go",
+            "rust",
+            "cpp",
+            "csharp",
+            "ruby",
+            "php",
+            "swift",
+            "kotlin",
+        },
         provider="openrouter",
     ),
 }
@@ -100,10 +135,16 @@ MODEL_REGISTRY: Dict[str, ModelCapability] = {
 class CapabilityChecker:
     """Checks if a model can handle a given task's requirements."""
 
-    def __init__(self, registry: Optional[Dict[str, ModelCapability]] = None):
+    def __init__(self, registry: dict[str, ModelCapability] | None = None):
         self._registry = registry or MODEL_REGISTRY
 
-    def check(self, model_id: str, token_count: int = 0, requires_tools: bool = False, requires_vision: bool = False) -> List[str]:
+    def check(
+        self,
+        model_id: str,
+        token_count: int = 0,
+        requires_tools: bool = False,
+        requires_vision: bool = False,
+    ) -> list[str]:
         """Check if a model can handle the task. Returns list of issues (empty = OK)."""
         capability = self._registry.get(model_id)
         if capability is None:
@@ -114,7 +155,9 @@ class CapabilityChecker:
             issues.append(
                 f"Context too large: {token_count} tokens > {capability.context_window} window"
             )
-        if not capability.can_handle_task(requires_tools=requires_tools, requires_vision=requires_vision):
+        if not capability.can_handle_task(
+            requires_tools=requires_tools, requires_vision=requires_vision
+        ):
             if requires_tools and not capability.supports_tool_calling:
                 issues.append(f"Model {model_id} does not support tool calling")
             if requires_vision and not capability.supports_vision:
@@ -127,7 +170,7 @@ class CapabilityChecker:
         requires_tools: bool = False,
         requires_vision: bool = False,
         prefer_free: bool = False,
-    ) -> List[str]:
+    ) -> list[str]:
         """Find all models that can handle the task, sorted by capability."""
         capable = []
         for model_id, cap in self._registry.items():

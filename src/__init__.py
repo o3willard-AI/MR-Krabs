@@ -10,17 +10,19 @@ Usage:
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
+from typing import Optional  # noqa: F401
 
-from src.core.cost import CostTracker, Budget, TokenCount, BudgetExceededError
-from src.core.orchestrator import MODELS
+from src.core.cost import Budget, BudgetExceededError, CostTracker, TokenCount
+from src.core.orchestrator import MODELS, LLMOrchestrator
 
 
 @dataclass
 class AskResult:
     """Result from a simple ask() call."""
+
     output: str
     cost: float
     tier: str
@@ -28,10 +30,10 @@ class AskResult:
     success: bool
     duration_seconds: float
     attempts: int
-    tokens: Optional[TokenCount] = None
+    tokens: TokenCount | None = None
 
 
-_default_tracker: Optional[CostTracker] = None
+_default_tracker: CostTracker | None = None
 
 
 def _get_default_tracker() -> CostTracker:
@@ -43,25 +45,64 @@ def _get_default_tracker() -> CostTracker:
     return _default_tracker
 
 
-def _get_default_model() -> str:
-    """Return the default L0 model, preferring OpenRouter over LM Studio."""
-    if os.environ.get("OPENROUTER_API_KEY"):
-        return "L0-Planner"
-    if os.environ.get("LM_STUDIO_HOST"):
-        return "L0-Coder"
-    if os.environ.get("OPENROUTER_API_KEY"):
-        return "L0-Planner"
-    raise EnvironmentError(
-        "No LLM provider configured. Set OPENROUTER_API_KEY environment variable.\n"
-        "Get a key at https://openrouter.ai/keys"
-    )
+def _get_available_tiers() -> list[str]:
+    """Return list of tiers that have required environment variables."""
+    available = []
+    for tier, config in MODELS.items():
+        provider = config.get("provider")
+        if provider == "openrouter":
+            if os.environ.get("OPENROUTER_API_KEY"):
+                available.append(tier)
+        elif provider == "lmstudio":
+            # LM Studio doesn't require API key, just host
+            # Check if host is set or default localhost works
+            # We'll assume it's available; connection failure will be caught later
+            available.append(tier)
+        else:
+            # Unknown provider, assume available
+            available.append(tier)
+    return available
+
+
+def _get_default_tier() -> str:
+    """Return the cheapest available tier."""
+    available = _get_available_tiers()
+    if not available:
+        raise OSError(
+            "No LLM provider configured. Set OPENROUTER_API_KEY environment variable.\n"
+            "Get a key at https://openrouter.ai/keys"
+        )
+    # Prefer L0-Planner, then L0-Coder, then L0-Reviewer, then others
+    preferred_order = [
+        "L0-Planner",
+        "L0-Coder",
+        "L0-Reviewer",
+        "L1-Coder",
+        "L2-Coder",
+        "L3-Coder",
+        "L3-Architect",
+    ]
+    for tier in preferred_order:
+        if tier in available:
+            return tier
+    # Fallback to first available
+    return available[0]
+
+
+def _estimate_tokens(prompt: str, system_prompt: str) -> TokenCount:
+    """Estimate token counts for reservation."""
+    # Rough approximation: 1 token ≈ 4 characters
+    prompt_tokens = len(prompt) // 4 + len(system_prompt) // 4
+    # Assume minimum completion of 200 tokens
+    completion_tokens = 200
+    return TokenCount(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
 
 
 def ask(
     prompt: str,
-    system_prompt: Optional[str] = None,
-    tier: Optional[str] = None,
-    max_cost: Optional[float] = None,
+    system_prompt: str | None = None,
+    tier: str | None = None,
+    max_cost: float | None = None,
 ) -> AskResult:
     """Execute a prompt with cost optimization.
 
@@ -83,61 +124,86 @@ def ask(
         BudgetExceededError: If the daily budget is exceeded.
     """
     tracker = _get_default_tracker()
-    selected_tier = tier or _get_default_model()
+    selected_tier = tier or _get_default_tier()
     model_config = MODELS.get(selected_tier, {})
-    model_name = model_config.get("model", "unknown")
-    provider = model_config.get("provider", "unknown")
+    model_name = str(model_config.get("model", "unknown"))
+    provider = str(model_config.get("provider", "unknown"))
 
     if provider == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
-        raise EnvironmentError(
-            "OPENROUTER_API_KEY not set. "
-            "Set with: export OPENROUTER_API_KEY='your-key'"
+        raise OSError(
+            "OPENROUTER_API_KEY not set. " "Set with: export OPENROUTER_API_KEY='your-key'"
         )
 
-    from src.core.orchestrator import LLMOrchestrator
+    sys_prompt = system_prompt or "You are a helpful assistant."
+    temperature = float(model_config.get("temperature", 0.7))  # type: ignore
+
+    # Estimate tokens and cost for reservation
+    estimated_tokens = _estimate_tokens(prompt, sys_prompt)
+    estimated_cost = tracker.calculate_cost(model_name, estimated_tokens)
+
+    # Apply max_cost limit
+    if max_cost is not None and float(estimated_cost) > max_cost:
+        raise BudgetExceededError(
+            f"Estimated cost ${float(estimated_cost):.4f} exceeds max_cost ${max_cost:.4f}"
+        )
+
+    # Reserve budget before execution (prevents race condition)
+    reservation = tracker.reserve_budget(scope="ask", estimated_cost=estimated_cost)
 
     orchestrator = LLMOrchestrator()
-    sys_prompt = system_prompt or "You are a helpful assistant."
+    start_time = time.time()
 
-    result = orchestrator.call_llm(selected_tier, sys_prompt, prompt)
+    try:
+        # Use call_llm_with_retry for retry logic and better metadata
+        result = orchestrator.call_llm_with_retry(
+            tier=selected_tier,
+            system_prompt=sys_prompt,
+            user_prompt=prompt,
+            temperature=temperature,
+        )
+        duration = time.time() - start_time
 
-    tokens = TokenCount(
-        prompt_tokens=len(prompt) // 4,
-        completion_tokens=len(result) // 4,
-    )
+        success = result.get("success", False)
+        output = result.get("output", "")
+        attempts = result.get("attempt", result.get("attempts", 1))
 
-    cost = tracker.calculate_cost(model_name, tokens)
+        if not success:
+            # LLM call failed after retries, release reservation
+            tracker.release_reservation(reservation.id)
+            error_msg = result.get("error", "Unknown error")
+            raise BudgetExceededError(f"LLM call failed: {error_msg}")
 
-    if max_cost is not None and float(cost) > max_cost:
-        raise BudgetExceededError(
-            f"Estimated cost ${float(cost):.4f} exceeds max_cost ${max_cost:.4f}"
+        # Calculate actual token usage (if available from API, otherwise estimate)
+        prompt_tokens = result.get("prompt_tokens", len(prompt + sys_prompt) // 4)
+        completion_tokens = result.get("completion_tokens", len(output) // 4)
+        actual_tokens = TokenCount(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
+        actual_cost = tracker.calculate_cost(model_name, actual_tokens)
+
+        # Finalize spending with actual cost
+        entry = tracker.finalize_spending(reservation.id, actual_cost)
+
+        return AskResult(
+            output=output,
+            cost=float(entry.cost_usd),
+            tier=selected_tier,
+            model=model_name,
+            success=success,
+            duration_seconds=duration,
+            attempts=attempts,
+            tokens=actual_tokens,
         )
 
-    entry = tracker.record(
-        task_id="ask",
-        tier=selected_tier,
-        model=model_name,
-        tokens=tokens,
-        duration=0.0,
-    )
-
-    return AskResult(
-        output=result,
-        cost=float(entry.cost_usd),
-        tier=selected_tier,
-        model=model_name,
-        success=True,
-        duration_seconds=0.0,
-        attempts=1,
-        tokens=tokens,
-    )
+    except Exception as e:
+        # Release reservation on any other failure
+        tracker.release_reservation(reservation.id)
+        raise BudgetExceededError(f"Task failed: {e}") from e
 
 
 def get_budget_remaining() -> float:
     """Get remaining daily budget in USD."""
     tracker = _get_default_tracker()
     summary = tracker.get_summary()
-    return summary["budget_remaining"]
+    return float(summary["budget_remaining"])
 
 
 def get_cost_summary() -> dict:
