@@ -76,16 +76,18 @@ Phase 5 focuses on preparing the cost-orchestrator package for public release an
 
 ---
 
-## GitHub Push Blocker
+## GitHub Push Instructions
 
-**Issue:** Cannot push to GitHub automatically due to security restrictions on token usage.
+**Note:** Manual push may be required due to authentication configuration.
 
-**Solution:** Manual push required by running:
+**Solution:** Set up your PAT and push manually:
 ```bash
 cd /home/sblanken/working/code/MR-Krabs
-git remote set-url origin https://YOUR_TOKEN@github.com/o3willard-AI/MR-Krabs.git
+# Configure git with your PAT (replace YOUR_PAT)
+git remote set-url origin https://YOUR_PAT@github.com/o3willard-AI/MR-Krabs.git
 git push origin main
-git remote set-url origin https://YOUR_TOKEN@github.com/o3willard-AI/MR-Krabs.git
+# Restore normal URL
+git remote set-url origin https://github.com/o3willard-AI/MR-Krabs.git
 ```
 
 **Alternative:** Push through GitHub Desktop or GitHub web interface.
