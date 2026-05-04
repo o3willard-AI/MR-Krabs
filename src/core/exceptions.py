@@ -99,3 +99,9 @@ class EscalationRequiredError(OrchestratorError):
     """Task requires escalation to next tier."""
 
     pass
+
+
+class BudgetExceededError(OrchestratorError):
+    """Budget limit exceeded."""
+
+    pass

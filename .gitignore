@@ -56,3 +56,10 @@ docs/_build/
 
 # Windows
 Thumbs.db
+*.pyc
+__pycache__/
+testllm.txt
+coverage.xml
+cost_report_*.csv
+cost_report_*.json
+.coverage

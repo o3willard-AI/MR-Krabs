@@ -12,18 +12,19 @@ PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.config import config_to_budget, load_config  # noqa: E402
-from src.core.cost import CostTracker, TokenCount  # noqa: E402
+from src.core.cost import Budget, CostTracker, TokenCount  # noqa: E402
 from src.core.orchestrator import MODELS  # noqa: E402
-
 
 def cmd_init(config_path: Path | None = None) -> int:
     """Interactive setup wizard."""
-    print("Welcome to Cost-Optimized Orchestrator!")
+    print("=" * 50)
+    print("  Cost-Optimized Orchestrator - Setup Wizard")
+    print("=" * 50)
     print()
-
+    
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     if api_key:
-        print("Found OPENROUTER_API_KEY in environment.")
+        print("✓ Found OPENROUTER_API_KEY in environment")
         use_env = input("Use environment variable for API key? [Y/n]: ").strip().lower()
         if use_env in ("", "y", "yes"):
             api_key_env = "OPENROUTER_API_KEY"
@@ -31,16 +32,18 @@ def cmd_init(config_path: Path | None = None) -> int:
             api_key_env = input("Enter env var name: ").strip() or "OPENROUTER_API_KEY"
     else:
         api_key_env = "OPENROUTER_API_KEY"
-        key = input("Enter your OpenRouter API key (or env var name): ").strip()
-        if key and not key.isupper():
+        print("Enter your OpenRouter API key:")
+        print("  Get one at: https://openrouter.ai/keys")
+        key = input("API key: ").strip()
+        if key:
             os.environ["OPENROUTER_API_KEY"] = key
-
-    has_lm = input("\nDo you have LM Studio running locally? [y/N]: ").strip().lower()
+    
+    has_lm = input("\n✓ Do you have LM Studio running locally? [y/N]: ").strip().lower()
     use_lm = has_lm in ("y", "yes")
-
-    budget_str = input("\nDaily budget in USD [10.00]: ").strip()
+    
+    budget_str = input("✓ Daily budget in USD [10.00]: ").strip()
     daily_budget = budget_str or "10.00"
-
+    
     config = {
         "version": "1.0",
         "budget": {
@@ -54,42 +57,36 @@ def cmd_init(config_path: Path | None = None) -> int:
             },
         },
     }
-
+    
     if use_lm:
         config["providers"]["lmstudio"] = {
             "base_url": "http://localhost:1234/v1",
         }
-
+        print("\n✓ LM Studio will be configured as free tier")
+    
     if config_path is None:
-        config_path = Path.cwd() / ".cost_orchestrator.toml"
-
+        config_path = Path.home() / ".cost_orchestrator.toml"
+    
     try:
         import tomllib  # noqa: F401
     except ImportError:
         print("Warning: tomllib not available (Python 3.11+). Using JSON config.")
         config_path = config_path.with_suffix(".json")
-
+    
     if config_path.suffix == ".toml":
         content = _dict_to_toml(config)
     else:
         content = json.dumps(config, indent=2)
-
+    
     config_path.write_text(content)
-    print(f"\nConfiguration written to {config_path}")
-
-    gitignore = Path.cwd() / ".gitignore"
-    ignore_entry = config_path.name
-    if gitignore.exists():
-        if ignore_entry not in gitignore.read_text():
-            with open(gitignore, "a") as f:
-                f.write(f"\n{ignore_entry}\n")
-    else:
-        gitignore.write_text(f"{ignore_entry}\n")
-    print(f"Added {ignore_entry} to .gitignore")
-
+    print(f"\n✓ Configuration written to {config_path}")
+    
+    print("\nSetup complete!")
     print("\nRun your first task:")
     print("  from cost_orchestrator import ask")
-    print('  result = ask("Write a hello world in Python")')
+    print("  result = ask('Write a hello world in Python')")
+    print("  print(result.output)")
+    
     return 0
 
 
@@ -207,27 +204,73 @@ def cmd_dry_run(description: str, tier: str | None = None) -> int:
     return 0
 
 
-def cmd_stats() -> int:
+def cmd_stats(export: str | None = None) -> int:
     """Show cost summary."""
     from src.core.config import config_to_budget, load_config
-
-    config = load_config()
-    budget = config_to_budget(config)
+    
+    # Handle case where no config exists
+    try:
+        config = load_config()
+        budget = config_to_budget(config)
+    except Exception as e:
+        print(f"[WARN] No valid config found, using defaults: {e}")
+        from src.core.cost import Budget
+        budget = Budget()
+    
     tracker = CostTracker(budget=budget)
-
+    
     summary = tracker.get_summary()
-    print(
-        f"Today's spending: ${summary['daily_total']:.2f} / "
-        f"${summary['budget_limit']:.2f} ({summary['budget_used_percent']:.1f}%)"
-    )
+    print("=" * 60)
+    print("  Cost-Optimized Orchestrator — Cost Summary")
+    print("=" * 60)
+    print()
+    print(f"Today's spending: ${summary['daily_total']:.2f} / "
+          f"${summary['budget_limit']:.2f} ({summary['budget_used_percent']:.1f}%)")
+    
+    # P1-5: Display budget warning if at 80% threshold
+    if summary['budget_used_percent'] >= 80.0:
+        print(f"\n[!] BUDGET WARNING: {summary['budget_used_percent']:.1f}% of daily limit used")
+    
+    print(f"Remaining: ${summary['budget_remaining']:.2f}")
     print()
     print("Tier breakdown:")
-    for tier, cost in summary.get("tier_totals", {}).items():
+    for tier, cost in sorted(summary.get("tier_totals", {}).items()):
         print(f"  {tier}: ${cost:.4f}")
     print()
-    print("Task totals:")
-    for task, cost in summary.get("task_totals", {}).items():
+    print("Task totals (top 5):")
+    task_totals = dict(sorted(summary.get("task_totals", {}).items(), 
+                              key=lambda x: x[1], reverse=True)[:5])
+    for task, cost in task_totals.items():
         print(f"  {task}: ${cost:.4f}")
+    print()
+    
+    # P1-6: Export functionality
+    if export:
+        export_path = None
+        if export == "json":
+            export_path = tracker.save_report()
+            print(f"✓ Saved JSON report: {export_path}")
+        elif export == "csv":
+            export_path = tracker.export_csv()
+            print(f"✓ Saved CSV report: {export_path}")
+        elif export == "both":
+            json_path = tracker.save_report()
+            csv_path = tracker.export_csv()
+            print(f"✓ Saved JSON report: {json_path}")
+            print(f"✓ Saved CSV report: {csv_path}")
+        else:
+            print(f"Invalid export format: {export}")
+            print("Valid formats: json, csv, both")
+            return 1
+    
+    if not export:
+        print("=" * 60)
+        print("Export options:")
+        print("  JSON: orchestrator stats --export json")
+        print("  CSV:  orchestrator stats --export csv")
+        print("  Both: orchestrator stats --export both")
+        print()
+    
     return 0
 
 
@@ -297,3 +340,242 @@ def _dict_to_toml(d: dict, indent: int = 0) -> str:
         else:
             lines.append(f'{prefix}{key} = "{value}"')
     return "\n".join(lines)
+
+
+# =============================================================================
+# Report Commands (P4-5: Daily Cost Reporting)
+# =============================================================================
+
+def cmd_daily_report(days: int = 1) -> int:
+    """Generate daily cost report."""
+    from datetime import date, timedelta
+    from decimal import Decimal
+    from src.core.metrics import MetricsCollector
+    from src.reports.daily_report import DailyCostReportGenerator
+    
+    print("=" * 60)
+    print("  Cost-Optimized Orchestrator - Daily Report")
+    print("=" * 60)
+    print()
+    
+    # Load config
+    config = load_config()
+    daily_limit = config_to_budget(config).daily_limit_usd
+    
+    # Get metrics
+    collector = MetricsCollector()
+    summary = collector.get_daily_summary()
+    
+    if not summary or summary.get('total_cost') is None:
+        print("No cost data available. Run some tasks first.")
+        return 0
+    
+    # Generate report
+    generator = DailyCostReportGenerator()
+    warning_threshold = Decimal(str(config.get('warning_threshold', 0.8)))
+    report = generator.generate(summary, daily_limit, warning_threshold, days)
+    print(report)
+    
+    return 0
+
+
+def cmd_efficiency_report() -> int:
+    """Generate tier efficiency report."""
+    from src.core.metrics import MetricsCollector
+    from src.reports.efficiency import TierEfficiencyAnalyzer
+    from src.reports.trend_analysis import TrendAnalyzer
+    
+    print("=" * 60)
+    print("  Cost-Optimized Orchestrator - Tier Efficiency Report")
+    print("=" * 60)
+    print()
+    
+    # Get metrics
+    collector = MetricsCollector()
+    tier_metrics = collector.get_tier_metrics()
+    
+    if not tier_metrics:
+        print("No tier data available. Run some tasks first.")
+        return 0
+    
+    # Analyze efficiency
+    analyzer = TierEfficiencyAnalyzer()
+    analyses = analyzer.analyze_all_tiers(tier_metrics)
+    
+    # Print tier rankings
+    print("Tier Efficiency Rankings:")
+    print("-" * 40)
+    
+    for analysis in analyzer.rank_by_efficiency(analyses):
+        print(f"  {analysis.tier_name}:")
+        print(f"    Usage: {analysis.usage_count} tasks")
+        print(f"    Cost: ${analysis.total_cost:.2f} (${analysis.avg_cost_per_task:.4f}/task)")
+        print(f"    Success: {analysis.success_rate:.1%}")
+        print(f"    Efficiency Score: {analysis.efficiency_score}/100")
+        print()
+    
+    # Get suggestions
+    suggestions = analyzer.get_optimization_suggestions(analyses)
+    if suggestions:
+        print("Optimization Suggestions:")
+        print("-" * 40)
+        for suggestion in suggestions:
+            priority_marker = {"high": "!", "medium": "~", "low": "."}[suggestion["priority"]]
+            print(f"  [{priority_marker}] {suggestion['tier']}: {suggestion['message']}")
+    
+    return 0
+
+
+def cmd_trend_report(days: int = 7) -> int:
+    """Generate cost trend report."""
+    from datetime import date, timedelta
+    from src.core.metrics import MetricsCollector
+    from src.reports.trend_analysis import TrendAnalyzer
+    
+    print("=" * 60)
+    print("  Cost-Optimized Orchestrator - Cost Trend Report")
+    print("=" * 60)
+    print()
+    
+    # Get metrics
+    collector = MetricsCollector()
+    
+    if days == 7:
+        daily_costs = collector.get_daily_costs_7day()
+    elif days == 30:
+        daily_costs = collector.get_daily_costs_30day()
+    else:
+        daily_costs = collector.get_daily_costs_7day()
+    
+    if not daily_costs:
+        print("No cost data available. Run some tasks first.")
+        return 0
+    
+    # Analyze trends
+    analyzer = TrendAnalyzer()
+    
+    if len(daily_costs) >= 7:
+        analysis = analyzer.analyze_7_day_trend(daily_costs[-7:])
+    else:
+        analysis = analyzer.analyze_7_day_trend(daily_costs)
+    
+    # Print trend analysis
+    print("Trend Analysis:")
+    print("-" * 40)
+    print(f"  Period: {analysis.period_start} to {analysis.period_end}")
+    print(f"  Total Cost: ${analysis.total_cost:.2f}")
+    print(f"  Average Daily: ${analysis.avg_daily_cost:.2f}")
+    print(f"  Day-over-Day Change: {analysis.day_over_day_change:+.1%}")
+    
+    if days >= 14 and len(daily_costs) >= 14:
+        print(f"  Week-over-Week Change: {analysis.week_over_week_change:+.1%}")
+    
+    print()
+    
+    if analysis.has_spending_spike:
+        print("⚠️  SPENDING SPIKE DETECTED!")
+        print(f"  Costs increased by {analysis.day_over_day_change:.0%} compared to yesterday.")
+        print()
+    
+    # Print recommendations
+    recommendations = analyzer.generate_trend_recommendations(analysis)
+    if recommendations:
+        print("Recommendations:")
+        print("-" * 40)
+        for rec in recommendations:
+            icon = {"high": "!", "medium": "~", "low": "."}[rec["priority"]]
+            print(f"  [{icon}] {rec['message']}")
+    
+    return 0
+
+
+def cmd_optimization_report() -> int:
+    """Generate comprehensive optimization report."""
+    from datetime import date, timedelta
+    from decimal import Decimal
+    from src.core.config import config_to_budget, load_config
+    from src.core.metrics import MetricsCollector
+    from src.reports.efficiency import TierEfficiencyAnalyzer
+    from src.reports.trend_analysis import TrendAnalyzer
+    
+    print("=" * 60)
+    print("  Cost-Optimized Orchestrator - Optimization Report")
+    print("=" * 60)
+    print()
+    
+    # Load config
+    config = load_config()
+    daily_limit = config_to_budget(config).daily_limit_usd
+    
+    # Get metrics
+    collector = MetricsCollector()
+    summary = collector.get_summary()
+    
+    if not summary:
+        print("No cost data available. Run some tasks first.")
+        return 0
+    
+    # Budget status
+    print("Budget Status:")
+    print("-" * 40)
+    total_cost = summary.get('total_cost', Decimal("0.00"))
+    budget = daily_limit
+    usage_pct = total_cost / budget if budget > 0 else Decimal("0.00")
+    print(f"  Daily Limit: ${budget:.2f}")
+    print(f"  Current Spend: ${total_cost:.2f}")
+    print(f"  Budget Used: {usage_pct:.1%}")
+    
+    if usage_pct >= Decimal("0.80"):
+        print("  ⚠️  WARNING: Over 80% of daily budget used!")
+    elif usage_pct >= Decimal("0.95"):
+        print("  ⚠️  CRITICAL: Over 95% of daily budget used!")
+    print()
+    
+    # Tier efficiency analysis
+    print("Tier Efficiency:")
+    print("-" * 40)
+    
+    tier_metrics = collector.get_tier_metrics()
+    if tier_metrics:
+        analyzer = TierEfficiencyAnalyzer()
+        analyses = analyzer.analyze_all_tiers(tier_metrics)
+        
+        for analysis in analyzer.rank_by_efficiency(analyses)[:3]:  # Top 3
+            print(f"  {analysis.tier_name}:")
+            print(f"    ${analysis.avg_cost_per_task:.4f}/task, "
+                  f"{analysis.success_rate:.1%} success, "
+                  f"score: {analysis.efficiency_score}")
+    else:
+        print("  No tier data available")
+    print()
+    
+    # Trend analysis
+    print("Recent Trends (7-day):")
+    print("-" * 40)
+    daily_costs = collector.get_daily_costs_7day()
+    if daily_costs:
+        trend_analyzer = TrendAnalyzer()
+        trend = trend_analyzer.analyze_7_day_trend(daily_costs[-7:])
+        print(f"  Average: ${trend.avg_daily_cost:.2f}/day")
+        print(f"  Trend: {trend.day_over_day_change:+.1%} vs yesterday")
+    else:
+        print("  No trend data available")
+    print()
+    
+    # Optimization suggestions
+    print("Optimization Suggestions:")
+    print("-" * 40)
+    
+    if tier_metrics:
+        suggestions = analyzer.get_optimization_suggestions(analyses)
+        for suggestion in suggestions[:5]:  # Top 5 suggestions
+            icon = {"high": "!", "medium": "~", "low": "."}[suggestion["priority"]]
+            print(f"  [{icon}] {suggestion['tier']}: {suggestion['message']}")
+    
+    if not suggestions:
+        print("  No optimization suggestions at this time.")
+    
+    print()
+    print("=" * 60)
+    
+    return 0

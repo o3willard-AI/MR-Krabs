@@ -4,14 +4,17 @@
 Implements a budget reservation pattern to prevent race conditions under concurrent access.
 """
 
+import csv
 import json
 import threading
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from enum import Enum
+from functools import partial
 from pathlib import Path
+from typing import Callable, Optional
 
 
 @dataclass
@@ -58,13 +61,14 @@ class FailureMode(Enum):
 @dataclass
 class Budget:
     """Budget configuration."""
-
+    
     daily_limit_usd: Decimal = Decimal("10.00")
     task_limit_usd: Decimal = Decimal("1.00")
     warning_threshold: Decimal = Decimal("0.8")
     failure_mode: FailureMode = FailureMode.FAIL_OPEN_WITH_ALERT
     emergency_cap_usd: Decimal = Decimal("5.00")
     emergency_call_limit: int = 10
+    warn_thresholds: list[Decimal] = field(default_factory=lambda: [Decimal("0.5"), Decimal("0.75"), Decimal("0.9")])
 
     def is_exceeded(self, current: Decimal) -> bool:
         return current >= self.daily_limit_usd
@@ -74,6 +78,13 @@ class Budget:
 
     def is_emergency_exceeded(self, current: Decimal) -> bool:
         return current >= (self.daily_limit_usd + self.emergency_cap_usd)
+    
+    def get_warning_level(self, current: Decimal) -> Optional[Decimal]:
+        """Return the highest warning threshold exceeded, or None."""
+        for threshold in reversed(self.warn_thresholds):
+            if current >= (self.daily_limit_usd * threshold):
+                return threshold
+        return None
 
 
 class CostTracker:
@@ -103,6 +114,14 @@ class CostTracker:
             "prompt": Decimal("0.000015"),
             "completion": Decimal("0.000075"),
         },
+        "google/gemma-4-31b-it": {
+            "prompt": Decimal("0.000001"),
+            "completion": Decimal("0.000002"),
+        },
+        "meta-llama/llama-3.3-70b": {
+            "prompt": Decimal("0.0000002"),
+            "completion": Decimal("0.0000008"),
+        },
     }
 
     def __init__(self, budget: Budget | None = None):
@@ -115,6 +134,66 @@ class CostTracker:
         self._reservations: dict[str, Reservation] = {}
         self._lock = threading.Lock()
         self._emergency_calls = 0
+        
+        # Warning tracking for P1-5
+        self._warning_shown_today = False
+        self._emergency_shown_today = False
+        self._current_date = datetime.now(UTC).date()
+        
+        # Cost alert handler for P4-1
+        self.alert_handler = CostAlertHandler()
+        
+        # Track warning levels shown today
+        self._warning_levels_shown: set[str] = set()
+
+    def _check_and_reset_daily_flags(self):
+        """Reset warning flags if new day."""
+        today = datetime.now(UTC).date()
+        if today != self._current_date:
+            self._warning_shown_today = False
+            self._emergency_shown_today = False
+            self._current_date = today
+            self._warning_levels_shown = set()
+
+    def _emit_warning(self, level: str = "warning"):
+        """Emit budget warning if not already shown today."""
+        self._check_and_reset_daily_flags()
+        
+        if level == "warning" and self._warning_shown_today:
+            return
+        
+        if level == "emergency" and self._emergency_shown_today:
+            return
+        
+        if level == "warning":
+            # P4-1: Multi-level warnings using alert handler
+            warning_level = self.budget.get_warning_level(self.daily_total)
+            if warning_level is None:
+                return
+            
+            # Determine alert type
+            if warning_level == Decimal("0.5"):
+                alert_type = "warning_50"
+            elif warning_level == Decimal("0.75"):
+                alert_type = "warning_75"
+            elif warning_level == Decimal("0.9"):
+                alert_type = "warning_90"
+            else:
+                alert_type = "warning"
+            
+            # Only show each level once per day
+            if alert_type in self._warning_levels_shown:
+                return
+            
+            self._warning_levels_shown.add(alert_type)
+            self.alert_handler.handle_warning(alert_type, self)
+        
+        elif level == "emergency":
+            emergency_threshold = self.budget.daily_limit_usd + self.budget.emergency_cap_usd
+            if self.budget.daily_limit_usd > 0 and self.daily_total >= emergency_threshold:
+                if not self._emergency_shown_today:
+                    self._emergency_shown_today = True
+                    self.alert_handler.handle_warning("emergency", self)
 
     def calculate_cost(self, model: str, tokens: TokenCount) -> Decimal:
         """Calculate cost for given tokens and model using Decimal arithmetic."""
@@ -219,12 +298,15 @@ class CostTracker:
                     f"Daily budget exceeded after finalization: "
                     f"${self.daily_total:.4f} / ${self.budget.daily_limit_usd:.2f}"
                 )
-
+            
+            # P1-5: Emit budget warning if at warning threshold
             if self.budget.is_warning(self.daily_total):
-                print(
-                    f"Budget warning: ${self.daily_total:.4f} / ${self.budget.daily_limit_usd:.2f}"
-                )
-
+                self._emit_warning("warning")
+            
+            # P1-5: Emit emergency warning if exceeded
+            if self.budget.is_emergency_exceeded(self.daily_total):
+                self._emit_warning("emergency")
+            
             return entry
 
     def release_reservation(self, reservation_id: str) -> None:
@@ -267,8 +349,8 @@ class CostTracker:
                 f"${self.budget.daily_limit_usd:.2f}"
             )
 
-        if self.budget.is_warning(self.daily_total):
-            print(f"Budget warning: ${self.daily_total:.4f} / ${self.budget.daily_limit_usd:.2f}")
+        # P4-1: Use multi-level warning system
+        self._emit_warning("warning")
 
         return entry
 
@@ -308,7 +390,7 @@ class CostTracker:
         """Save cost report to JSON file."""
         if not filepath:
             filepath = f"cost_report_{datetime.now().strftime('%Y%m%d')}.json"
-
+        
         report = {
             "generated": datetime.now(UTC).isoformat(),
             "summary": self.get_summary(),
@@ -329,15 +411,119 @@ class CostTracker:
                 for e in self.entries
             ],
         }
-
+        
         path = Path(filepath)
         with open(path, "w") as f:
             json.dump(report, f, indent=2)
-
+        
         return path
+    
+    def export_csv(self, filepath: str | None = None) -> Path:
+        """Export cost data to CSV file.
+        
+        P1-6: CSV export for cost analysis
+        """
+        if not filepath:
+            filepath = f"cost_report_{datetime.now().strftime('%Y%m%d')}.csv"
+        
+        path = Path(filepath)
+        
+        with open(path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'timestamp', 'task_id', 'tier', 'model', 
+                'prompt_tokens', 'completion_tokens', 'total_tokens',
+                'cost_usd', 'duration_seconds'
+            ])
+            
+            for entry in self.entries:
+                writer.writerow([
+                    entry.timestamp,
+                    entry.task_id,
+                    entry.tier,
+                    entry.model,
+                    entry.tokens.prompt_tokens,
+                    entry.tokens.completion_tokens,
+                    entry.tokens.total_tokens,
+                    float(entry.cost_usd),
+                    entry.duration_seconds
+                ])
+        
+        return path
+    
+    def add_alert_callback(self, callback: Callable) -> None:
+        """Register a callback to be invoked on cost alerts.
+        
+        P4-1: Real-time cost alert callbacks
+        """
+        self.alert_handler.add_callback(callback)
+    
+    def get_alert_history(self) -> list:
+        """Get list of all cost alerts generated."""
+        return self.alert_handler.alert_history.copy()
 
 
 class BudgetExceededError(Exception):
     """Raised when budget is exceeded."""
-
     pass
+
+
+@dataclass
+class CostAlert:
+    """Represents a cost alert event."""
+    timestamp: str
+    alert_type: str  # 'warning', 'warning_50', 'warning_75', 'warning_90', 'emergency'
+    daily_total: Decimal
+    budget_limit: Decimal
+    percentage: Decimal
+    message: str
+
+
+class CostAlertHandler:
+    """Handles cost alerts with configurable callbacks."""
+    
+    def __init__(self):
+        self.callbacks: list[Callable[[CostAlert], None]] = []
+        self.alert_history: list[CostAlert] = []
+    
+    def add_callback(self, callback: Callable[[CostAlert], None]) -> None:
+        """Add a callback to be invoked on alerts."""
+        self.callbacks.append(callback)
+    
+    def _invoke_callbacks(self, alert: CostAlert) -> None:
+        """Invoke all registered callbacks with the alert."""
+        for callback in self.callbacks:
+            try:
+                callback(alert)
+            except Exception as e:
+                print(f"[COST_ALERT] Error invoking callback: {e}")
+    
+    def _create_alert(self, alert_type: str, tracker: 'CostTracker') -> CostAlert:
+        """Create a CostAlert object."""
+        daily_total = tracker.get_daily_total()
+        budget_limit = tracker.budget.daily_limit_usd
+        percentage = (daily_total / budget_limit * Decimal("100")) if budget_limit > 0 else Decimal("0")
+        
+        messages = {
+            "warning_50": f"\n[BUDGET WARNING - 50%] ${float(daily_total):.4f} / ${float(budget_limit):.2f} ({float(percentage):.1f}%)",
+            "warning_75": f"\n[BUDGET WARNING - 75%] ${float(daily_total):.4f} / ${float(budget_limit):.2f} ({float(percentage):.1f}%)",
+            "warning_90": f"\n[BUDGET WARNING - 90%] ${float(daily_total):.4f} / ${float(budget_limit):.2f} ({float(percentage):.1f}%)",
+            "warning": f"\n[BUDGET WARNING - {float(percentage):.1f}%] ${float(daily_total):.4f} / ${float(budget_limit):.2f}",
+            "emergency": f"\n*** EMERGENCY BUDGET ALERT *** ${float(daily_total):.4f} / ${float(budget_limit):.2f} ***",
+        }
+        
+        return CostAlert(
+            timestamp=datetime.now(UTC).isoformat(),
+            alert_type=alert_type,
+            daily_total=daily_total,
+            budget_limit=budget_limit,
+            percentage=percentage,
+            message=messages.get(alert_type, messages["warning"])
+        )
+    
+    def handle_warning(self, alert_type: str, tracker: 'CostTracker') -> None:
+        """Handle a budget warning alert."""
+        alert = self._create_alert(alert_type, tracker)
+        self.alert_history.append(alert)
+        self._invoke_callbacks(alert)
+        print(alert.message)

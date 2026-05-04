@@ -93,17 +93,6 @@ def _validate_config_version(user_config: dict[str, Any]) -> None:
         )
 
 
-def _validate_config_version(user_config: dict[str, Any]) -> None:
-    """Validate config version and raise if incompatible."""
-    user_version = user_config.get("version", "1.0")
-    if user_version != CURRENT_CONFIG_VERSION:
-        raise ValueError(
-            f"Config version mismatch: file has v{user_version}, "
-            f"code expects v{CURRENT_CONFIG_VERSION}. "
-            f"Run 'orchestrator config migrate' to upgrade."
-        )
-
-
 def config_to_budget(config: dict[str, Any]) -> Budget:
     """Convert config dict to Budget object."""
     budget_cfg = config.get("budget", {})

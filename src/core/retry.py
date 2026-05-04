@@ -41,6 +41,7 @@ def retry_with_backoff(
     config: RetryConfig | None = None,
     retryable_exceptions: tuple = (Exception,),
     on_retry: Callable[[int, Exception, float], None] | None = None,
+    max_retries: int | None = None,
 ) -> Any:
     """
     Execute function with exponential backoff retry.
@@ -59,23 +60,45 @@ def retry_with_backoff(
     """
     if config is None:
         config = RetryConfig()
-
+    
+    # Override max_retries if provided as parameter
+    if max_retries is not None:
+        config = RetryConfig(
+            max_retries=max_retries,
+            base_delay=config.base_delay,
+            max_delay=config.max_delay,
+            exponential_base=config.exponential_base,
+            jitter=config.jitter,
+        )
+    
     last_exception = None
-
-    for attempt in range(config.max_retries):
+    
+    # First attempt
+    try:
+        return func()
+    except retryable_exceptions as e:
+        last_exception = e
+    
+    # Retry up to max_retries times
+    # If max_retries is 0, no retries will happen
+    for retry_attempt in range(config.max_retries):
+        # Calculate delay before retry
+        delay = calculate_delay(retry_attempt, config)
+        
+        # Call callback before retry
+        if on_retry:
+            on_retry(retry_attempt + 1, last_exception, delay)
+        
+        # Sleep before retry
+        time.sleep(delay)
+        
+        # Execute retry
         try:
             return func()
         except retryable_exceptions as e:
             last_exception = e
-
-            if attempt < config.max_retries - 1:
-                delay = calculate_delay(attempt, config)
-
-                if on_retry:
-                    on_retry(attempt + 1, e, delay)
-
-                time.sleep(delay)
-
+    
+    # If we get here, all attempts failed
     raise last_exception
 
 
