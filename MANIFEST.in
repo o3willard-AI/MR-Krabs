@@ -1,0 +1,10 @@
+# Include all Python source files
+include *.toml
+include *.md
+include *.txt
+recursive-include src *.py
+recursive-include tests *.py
+include MANIFEST.in
+global-exclude __pycache__
+global-exclude *.pyc
+global-exclude *.pyo

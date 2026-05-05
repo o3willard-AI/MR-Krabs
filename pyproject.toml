@@ -12,14 +12,21 @@ requires-python = ">=3.11"
 authors = [
     {name = "PairAdmin Team", email = "team@pairadmin.dev"}
 ]
-keywords = ["llm", "orchestration", "ai", "development", "multi-tier"]
+maintainers = [
+    {name = "MR-Krabs Contributors"}
+]
+keywords = ["llm", "orchestration", "ai", "cost-optimization", "budget-tracking", "openrouter", "crewai", "langchain"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
 ]
 dependencies = [
     "requests>=2.31.0",
@@ -42,7 +49,7 @@ dev = [
 metrics = ["prometheus-client>=0.19.0"]
 
 [project.scripts]
-orchestrator = "src.cli.main:main"
+cost-orchestrator = "src.cli.main:main"
 
 [project.urls]
 Homepage = "https://github.com/pairadmin/orchestrator"
@@ -72,3 +79,18 @@ strict_optional = true
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --cov=src --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["tests/*", "*__init__.py"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
