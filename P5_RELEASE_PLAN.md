@@ -83,9 +83,9 @@ Phase 5 focuses on preparing the cost-orchestrator package for public release an
 **Solution:** Manual push required by running:
 ```bash
 cd /home/sblanken/working/code/MR-Krabs
-git remote set-url origin https://x-access-token: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@github.com/o3willard-AI/MR-Krabs.git
+git remote set-url origin https://YOUR_TOKEN@github.com/o3willard-AI/MR-Krabs.git
 git push origin main
-git remote set-url origin https://github.com/o3willard-AI/MR-Krabs.git
+git remote set-url origin https://YOUR_TOKEN@github.com/o3willard-AI/MR-Krabs.git
 ```
 
 **Alternative:** Push through GitHub Desktop or GitHub web interface.
