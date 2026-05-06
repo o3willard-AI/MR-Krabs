@@ -35,6 +35,11 @@ dependencies = [
     "rich>=13.7.0",
     "click>=8.1.7",
     "structlog>=23.2.0",
+    # CrewAI multi-agent framework (required for Phase 3+)
+    "crewai>=0.70.0,<1.0.0",
+    # MCP Server dependencies (Phase 0+)
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -78,7 +83,7 @@ strict_optional = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --cov=src --cov-report=term-missing"
+addopts = "-v"
 
 [tool.coverage.run]
 source = ["src"]
