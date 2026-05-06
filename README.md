@@ -60,8 +60,14 @@ Instead of always using expensive models like GPT-4, this tool tries cheap model
 ### Installation
 
 ```bash
+# Install MR-Krabs (includes CrewAI multi-agent framework automatically)
 pip install cost-orchestrator
+
+# Verify installation
+python -c "from crewai import Agent, Task, Crew; print('✅ CrewAI ready!')"
 ```
+
+**Note**: CrewAI (multi-agent framework) is a required dependency and installs automatically (~500MB including dependencies).
 
 ### First Task
 
