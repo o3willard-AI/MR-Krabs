@@ -22,6 +22,10 @@ Usage:
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+import os
+
+
+_UNSET = object()  # Sentinel to distinguish None from "not provided"
 
 
 class EnforcementMode(Enum):
@@ -73,22 +77,30 @@ class BudgetEnforcer:
     
     def __init__(
         self,
-        budget_limit: Optional[float] = None,
+        budget_limit: Optional[float] = _UNSET,
         enforcement_mode: str = "notify_then_fail",
         warning_threshold: float = 80.0,
+        spent: float = 0.0,  # Initial amount already spent
     ):
         """
         Initialize budget enforcer.
         
         Args:
             budget_limit: Maximum budget in USD. None means unlimited.
-                         Overrides BUDGET_LIMIT env var if provided.
+                         If not provided (default), uses BUDGET_LIMIT env var or 10.0.
             enforcement_mode: One of 'notify_only', 'fail', 'notify_then_fail', 
                             'fail_with_notification'. Default: notify_then_fail.
             warning_threshold: Percentage at which to issue warnings (default: 80).
+            spent: Initial amount already spent (default: 0.0)
         """
+        # Handle budget_limit with sentinel value
+        if budget_limit is _UNSET:
+            # Use env var or default when not explicitly provided
+            budget_limit = float(os.environ.get('BUDGET_LIMIT', '10.0'))
+        # If None, keep it as None (unlimited budget)
+        
         self.budget_limit = budget_limit
-        self._spent = 0.0
+        self._spent = spent  # Use passed-in spent amount
         self.warning_threshold = warning_threshold
         self.enforcement_mode = EnforcementMode(enforcement_mode)
     
@@ -131,6 +143,17 @@ class BudgetEnforcer:
             )
         
         total_after = self._spent + would_spend
+        
+        # Handle zero budget case
+        if self.budget_limit == 0:
+            return BudgetCheckResult(
+                can_proceed=False,
+                remaining_budget=0.0,
+                spent=self._spent,
+                budget_limit=0.0,
+                error="Budget limit is zero - no spending allowed",
+            )
+        
         percentage_after = (total_after / self.budget_limit) * 100
         
         # Determine behavior based on enforcement mode

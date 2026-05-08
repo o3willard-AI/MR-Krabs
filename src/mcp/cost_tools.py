@@ -172,7 +172,16 @@ class BudgetCheckRequest(BaseModel):
     """Request model for budget checking."""
     session_id: Optional[str] = Field(None, description="Session ID (optional)")
     config: Optional[Dict[str, Any]] = Field(None, description="Full config for stateless mode")
-    would_spend: float = Field(description="Amount that would be spent")
+    would_spend: float = Field(default=0, description="Amount that would be spent")
+    estimated_cost: Optional[float] = Field(None, description="Alias for would_spend (deprecated)")
+    
+    model_config = {"arbitrary_types_allowed": True}
+    
+    def __init__(self, **data):
+        # Handle deprecated field name
+        super().__init__(**data)
+        if self.estimated_cost is not None and self.would_spend == 0:
+            object.__setattr__(self, 'would_spend', self.estimated_cost)
 
 
 class BudgetCheckResponse(BaseModel):

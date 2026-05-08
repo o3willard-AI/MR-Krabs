@@ -36,6 +36,7 @@ class SessionConfig:
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
     ttl_seconds: int = 3600  # Default 1 hour
+    spent: float = 0.0  # Track actual spending
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert session config to dictionary."""
@@ -49,6 +50,8 @@ class SessionConfig:
             "created_at": self.created_at,
             "last_accessed": self.last_accessed,
             "ttl_seconds": self.ttl_seconds,
+            "spent": self.spent,
+            "remaining_budget": (self.budget_limit or 0) - self.spent,
         }
     
     @classmethod
@@ -64,11 +67,21 @@ class SessionConfig:
             created_at=data.get("created_at", time.time()),
             last_accessed=data.get("last_accessed", time.time()),
             ttl_seconds=data.get("ttl_seconds", 3600),
+            spent=data.get("spent", 0.0),
         )
     
     def is_expired(self) -> bool:
         """Check if session has expired based on TTL."""
         return (time.time() - self.last_accessed) > self.ttl_seconds
+    
+    @property
+    def remaining_budget(self) -> float:
+        """Calculate remaining budget."""
+        return max(0, (self.budget_limit or 0) - self.spent)
+    
+    def add_spent(self, amount: float) -> None:
+        """Add to spent amount."""
+        self.spent += amount
 
 
 class SessionManager:
@@ -116,6 +129,9 @@ class SessionManager:
             # Generate unique session ID
             session_id = f"session-{uuid.uuid4().hex[:8]}"
             
+            # Capture current time once for consistency
+            now = time.time()
+            
             # Create config with overrides
             if config:
                 session_config = SessionConfig(
@@ -126,9 +142,17 @@ class SessionManager:
                     default_tier=config.get("default_tier", "L0"),
                     models=config.get("models", ["google/gemma-7b-it"]),
                     ttl_seconds=config.get("ttl_seconds", self.ttl_seconds),
+                    created_at=now,
+                    last_accessed=now,
                 )
             else:
-                session_config = SessionConfig(session_id=session_id)
+                # Use manager defaults when no config provided
+                session_config = SessionConfig(
+                    session_id=session_id,
+                    ttl_seconds=self.ttl_seconds,
+                    created_at=now,
+                    last_accessed=now,
+                )
             
             # Store session
             self._sessions[session_id] = session_config

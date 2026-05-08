@@ -56,10 +56,14 @@ from .analytics_tools import (
     CostTrendsResponse,
     EfficiencyReportRequest,
     EfficiencyReportResponse,
+    ExportRequest,
+    ExportResponse,
     process_analytics_summary,
     process_tier_breakdown,
     process_cost_trends,
     process_efficiency_report,
+    process_export_csv,
+    process_export_json,
 )
 
 # Initialize logger
@@ -120,6 +124,10 @@ class SessionStatusResponse(BaseModel):
     active: bool
     config: Optional[Dict[str, Any]] = None
     time_remaining_seconds: Optional[float] = None
+    budget_limit: Optional[float] = None
+    remaining_budget: Optional[float] = None
+    spent: Optional[float] = 0.0
+    message: Optional[str] = None
 
 
 class SessionCloseResponse(BaseModel):
@@ -235,6 +243,8 @@ async def list_tools():
             {"name": "mcp_mrkrabs_tier_breakdown", "description": "Cost breakdown by tier"},
             {"name": "mcp_mrkrabs_cost_trends", "description": "Cost trend analysis over time"},
             {"name": "mcp_mrkrabs_efficiency_report", "description": "Efficiency metrics and suggestions"},
+            {"name": "mcp_mrkrabs_export_csv", "description": "Export analytics to CSV file"},
+            {"name": "mcp_mrkrabs_export_json", "description": "Export analytics to JSON file"},
         ],
     }
     
@@ -308,6 +318,9 @@ async def session_status(session_id: str):
         active=True,
         config=session.to_dict(),
         time_remaining_seconds=time_remaining,
+        budget_limit=session.budget_limit,
+        remaining_budget=session.remaining_budget,
+        spent=session.spent,
     )
 
 
@@ -433,6 +446,7 @@ async def budget_check(request: BudgetCheckRequest):
                 budget_limit=session.budget_limit,
                 enforcement_mode=session.enforcement_mode,
                 warning_threshold=session.warning_threshold,
+                spent=session.spent,  # Pass accumulated spending for accurate check
             )
         elif request.config:
             # Stateless mode
@@ -496,6 +510,7 @@ async def cost_track(request: CostTrackRequest):
                 budget_limit=session.budget_limit,
                 enforcement_mode=session.enforcement_mode,
                 warning_threshold=session.warning_threshold,
+                spent=session.spent,  # Pass accumulated spending for accurate check
             )
             
             check_result = enforcer.check_budget(would_spend=request.amount)
@@ -507,6 +522,12 @@ async def cost_track(request: CostTrackRequest):
         
         # Process the tracking
         result = process_cost_track(request)
+        
+        # Update session spending if session_id provided
+        if request.session_id:
+            session = session_manager.get_session(request.session_id)
+            if session:
+                session.add_spent(request.amount)
         
         log.info(
             f"Cost tracked",
@@ -802,6 +823,94 @@ async def efficiency_report(request: EfficiencyReportRequest):
     except Exception as e:
         log.error(f"Failed to generate efficiency report", error=str(e))
         raise HTTPException(status_code=500, detail=f"Efficiency report failed: {str(e)}")
+
+
+# ==================== Export Tools ====================
+
+@app.post("/tools/mcp_mrkrabs_export_csv", 
+          summary="Export analytics to CSV",
+          dependencies=[Depends(verify_api_key)])
+async def export_csv(request: ExportRequest):
+    """
+    Export analytics data to CSV format.
+    
+    Generates a comprehensive CSV report including:
+    - Summary metrics
+    - Tier breakdown
+    - Daily trends
+    - Efficiency analysis
+    
+    Args:
+        request: ExportRequest with period and output options
+        
+    Returns:
+        ExportResponse with file path and data preview
+        
+    Example:
+        POST /tools/mcp_mrkrabs_export_csv
+        {
+            "period_days": 30,
+            "output_dir": "/tmp/reports",
+            "output_file": "my_report.csv"
+        }
+    """
+    try:
+        result = process_export_csv(request)
+        
+        log.info(
+            "CSV export generated",
+            session_id=request.session_id,
+            period_days=request.period_days,
+            file_path=result.file_path,
+        )
+        
+        return result
+    except Exception as e:
+        log.error(f"Failed to generate CSV export", error=str(e))
+        raise HTTPException(status_code=500, detail=f"CSV export failed: {str(e)}")
+
+
+@app.post("/tools/mcp_mrkrabs_export_json", 
+          summary="Export analytics to JSON",
+          dependencies=[Depends(verify_api_key)])
+async def export_json(request: ExportRequest):
+    """
+    Export analytics data to JSON format.
+    
+    Generates a comprehensive JSON report including:
+    - Summary metrics
+    - Tier breakdown
+    - Daily trends
+    - Efficiency analysis
+    
+    Args:
+        request: ExportRequest with period and output options
+        
+    Returns:
+        ExportResponse with file path and data preview
+        
+    Example:
+        POST /tools/mcp_mrkrabs_export_json
+        {
+            "period_days": 30,
+            "output_dir": "/tmp/reports",
+            "output_file": "my_report.json"
+        }
+    """
+    try:
+        result = process_export_json(request)
+        
+        log.info(
+            "JSON export generated",
+            session_id=request.session_id,
+            period_days=request.period_days,
+            file_path=result.file_path,
+        )
+        
+        return result
+    except Exception as e:
+        log.error(f"Failed to generate JSON export", error=str(e))
+        raise HTTPException(status_code=500, detail=f"JSON export failed: {str(e)}")
 
 
 # ==================== Error Handlers ====================

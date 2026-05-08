@@ -133,7 +133,7 @@ class TestSessionManager:
         session_id = manager.create_session()
         
         assert session_id.startswith("session-")
-        assert len(session_id) == 17  # "session-" + 8 hex chars
+        assert len(session_id) == 16  # "session-" (8 chars) + 8 hex chars
         
         # Verify session was stored
         session = manager.get_session(session_id)
@@ -190,27 +190,27 @@ class TestSessionManager:
         # Create manager with short TTL
         manager = SessionManager(ttl_seconds=1)
         
-        # Mock time to create session at t=0
-        with patch("time.time", return_value=1000):
+        # Mock time module where it's used in session_manager
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
             session_id = manager.create_session()
         
-        # Verify session exists at t=0
-        with patch("time.time", return_value=1000):
+        # Verify session exists at t=1000
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
             assert manager.get_session(session_id) is not None
         
-        # Verify session expires after TTL (t=2, > 1 second TTL)
-        with patch("time.time", return_value=1002):
+        # Verify session expires after TTL (t=1002, > 1 second TTL from last_accessed at t=1000)
+        with patch("src.mcp.session_manager.time.time", return_value=1002):
             assert manager.get_session(session_id) is None
     
     def test_session_auto_cleanup_on_access(self):
         """Test that expired sessions are cleaned up on access."""
         manager = SessionManager(ttl_seconds=1)
         
-        with patch("time.time", return_value=1000):
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
             session_id = manager.create_session()
         
-        # Access at t=2 (expired) - should auto-remove
-        with patch("time.time", return_value=1002):
+        # Access at t=1002 (expired, > 1 second TTL from last_accessed at t=1000) - should auto-remove
+        with patch("src.mcp.session_manager.time.time", return_value=1002):
             session = manager.get_session(session_id)
             assert session is None
         
@@ -221,11 +221,13 @@ class TestSessionManager:
         """Test listing all active sessions."""
         manager = SessionManager(ttl_seconds=3600)
         
-        with patch("time.time", return_value=1000):
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
             id1 = manager.create_session({"budget_limit": 10.0})
             id2 = manager.create_session({"budget_limit": 20.0})
-        
-        sessions = manager.list_sessions()
+            
+        # List sessions immediately after creation (still at t=1000 contextually, but need to patch)
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
+            sessions = manager.list_sessions()
         
         assert len(sessions) == 2
         session_ids = [s.session_id for s in sessions]
@@ -236,16 +238,16 @@ class TestSessionManager:
         """Test that list_sessions filters out expired sessions."""
         manager = SessionManager(ttl_seconds=1)
         
-        with patch("time.time", return_value=1000):
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
             id1 = manager.create_session()  # Will expire
             id2 = manager.create_session()  # Will expire
         
         # Both should be listed at t=1000
-        with patch("time.time", return_value=1000):
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
             assert len(manager.list_sessions()) == 2
         
         # Neither should be listed at t=1002 (expired)
-        with patch("time.time", return_value=1002):
+        with patch("src.mcp.session_manager.time.time", return_value=1002):
             sessions = manager.list_sessions()
             assert len(sessions) == 0
     
@@ -253,42 +255,46 @@ class TestSessionManager:
         """Test explicit cleanup of expired sessions."""
         manager = SessionManager(ttl_seconds=1)
         
-        with patch("time.time", return_value=1000):
-            manager.create_session()
-            manager.create_session()
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
+            session_id_1 = manager.create_session()
+            session_id_2 = manager.create_session()
         
-        # Clean up at t=1002
-        with patch("time.time", return_value=1002):
-            count = manager.cleanup_expired()
+        # Clean up at t=1002 (both expired)
+        with patch("src.mcp.session_manager.time.time", return_value=1002):
+            removed = manager.cleanup_expired()
+            assert removed == 2
         
-        assert count == 2
-    
+        # Verify storage is empty
+        assert len(manager._sessions) == 0
+        
     def test_get_session_count(self):
         """Test getting active session count."""
         manager = SessionManager(ttl_seconds=3600)
         
-        with patch("time.time", return_value=1000):
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
             manager.create_session()
             manager.create_session()
             manager.create_session()
-        
-        count = manager.get_session_count()
+            
+        # Count sessions immediately after creation (still at t=1000 contextually, but need to patch)
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
+            count = manager.get_session_count()
         
         assert count == 3
-    
+        
     def test_get_session_updates_last_accessed(self):
         """Test that accessing a session updates last_accessed timestamp."""
         manager = SessionManager(ttl_seconds=3600)
         
-        with patch("time.time", return_value=1000):
+        with patch("src.mcp.session_manager.time.time", return_value=1000):
             session_id = manager.create_session()
         
         # Access at t=2000
-        with patch("time.time", return_value=2000):
+        with patch("src.mcp.session_manager.time.time", return_value=2000):
             session = manager.get_session(session_id)
         
         assert session.last_accessed == 2000
-    
+        
     def test_concurrent_session_creation(self):
         """Test thread-safe concurrent session creation."""
         manager = SessionManager()
