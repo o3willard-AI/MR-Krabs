@@ -220,7 +220,8 @@ class TestCompleteAgentWorkflow:
                 output_tokens=100
             )
             
-            estimated_cost = estimate.get("estimated_cost_usd", 0)
+            # Note: API returns "estimated_cost", not "estimated_cost_usd"
+            estimated_cost = estimate.get("estimated_cost", 0)
             assert estimated_cost > 0, "Cost should be estimated"
             assert estimated_cost < 0.10, \
                 f"Small task should cost less than $0.10: {estimated_cost}"
@@ -318,10 +319,10 @@ class TestMultiTaskWorkflow:
             
             # Final state should show all costs tracked
             final_status = helper.get_session_status()
-            total_spent = final_status.get("total_spent", 0)
+            # Note: API returns "spent", not "total_spent"
+            total_spent = final_status.get("spent", 0)
             
-            assert abs(total_spent - sum(task_costs)) < 0.001, \
-                f"Total spent mismatch: {total_spent} vs {sum(task_costs)}"
+            assert abs(total_spent - sum(task_costs)) < 0.001, f"Total spent mismatch: {total_spent} vs {sum(task_costs)}"
             
             print(f"✓ Multi-task workflow successful: ${total_spent:.2f} spent across {len(task_costs)} tasks")
             

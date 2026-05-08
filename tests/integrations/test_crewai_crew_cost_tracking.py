@@ -254,6 +254,38 @@ class TestCostAwareCrewBudgetEnforcement:
 class TestCostAwareCrewIntegration:
     """Integration tests combining crew cost tracking with CostTracker."""
 
+    @pytest.fixture
+    def sample_agents(self):
+        """Create sample agents for crew tests."""
+        return [
+            CostAwareAgent(
+                role="Researcher",
+                goal="Research topics thoroughly",
+                backstory="Expert researcher",
+            ),
+            CostAwareAgent(
+                role="Writer",
+                goal="Write clear articles",
+                backstory="Professional writer",
+            ),
+        ]
+
+    @pytest.fixture
+    def sample_tasks(self, sample_agents):
+        """Create sample tasks for crew tests."""
+        return [
+            CostAwareTask(
+                description="Research the topic",
+                expected_output="Research findings",
+                agent=sample_agents[0],
+            ),
+            CostAwareTask(
+                description="Write an article",
+                expected_output="Completed article",
+                agent=sample_agents[1],
+            ),
+        ]
+
     def test_multiple_crews_share_tracker(self, sample_tasks, sample_agents):
         """Test that multiple crews can share the same CostTracker."""
         tracker = CostTracker()

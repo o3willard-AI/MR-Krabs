@@ -248,7 +248,11 @@ class CostAwareCrew:
         self.tasks = tasks
         self.agents = agents
         self.config = config or CrewConfig()
-        self.cost_limit = Decimal(str(cost_limit)) if cost_limit else None
+        # Accept both None and numeric values (including 0)
+        if cost_limit is not None:
+            self.cost_limit = Decimal(str(cost_limit))
+        else:
+            self.cost_limit = None
         self.cost_tracker = cost_tracker or CostTracker()  # Use provided or create default
         
         # Generate unique task ID for this crew execution
@@ -259,7 +263,7 @@ class CostAwareCrew:
         self.llm_wrapper = CostAwareLLMWrapper(
             cost_tracker=self.cost_tracker,
             task_id=self.task_id,
-            budget_limit=self.cost_limit if self.cost_limit else None,
+            budget_limit=self.cost_limit if self.cost_limit is not None else None,
         )
         
         self._crew: Optional[Crew] = None
@@ -271,13 +275,15 @@ class CostAwareCrew:
         crewai_agents = [agent.get_agent() for agent in self.agents]
 
         # Create callback handler for automatic cost tracking
+        # Note: CrewAI v0.203.2+ uses step_callback/task_callback instead of callback_handlers
         callback_handler = CostTrackingCallbackHandler(self.llm_wrapper)
 
         crew_params = {
             "tasks": crewai_tasks,
             "agents": crewai_agents,
             **self.config.to_crew_params(),
-            "callback_handlers": [callback_handler],  # ← AUTOMATIC COST TRACKING!
+            # Use CrewAI v0.203.2+ API - single callback for steps
+            "step_callback": callback_handler.on_step_complete if hasattr(callback_handler, 'on_step_complete') else callback_handler,
         }
 
         self._crew = Crew(**crew_params)
@@ -451,8 +457,8 @@ class CostTrackingCallbackHandler(CallbackHandler):
         ...     model="google/gemma-7b-it",
         ... )
         >>> callback = CostTrackingCallbackHandler(wrapper)
-        >>> # Pass to CrewAI crew:
-        >>> crew = Crew(..., callback_handlers=[callback])
+        >>> # Pass to CrewAI crew (CrewAI v0.203.2+):
+        >>> crew = Crew(..., step_callback=callback)
     """
 
     def __init__(self, wrapper: "CostAwareLLMWrapper"):
@@ -465,6 +471,24 @@ class CostTrackingCallbackHandler(CallbackHandler):
         super().__init__()
         self.wrapper = wrapper
         logger.debug(f"CostTrackingCallbackHandler initialized for task {wrapper.task_id}")
+
+    def on_step_complete(self, **kwargs):
+        """
+        Called after each step in CrewAI v0.203.2+.
+        
+        This is the new callback method for step_callback parameter.
+        """
+        # Extract token usage from kwargs if available
+        if 'usage' in kwargs:
+            usage = kwargs['usage']
+            prompt_tokens = getattr(usage, 'prompt_tokens', 0) or 0
+            completion_tokens = getattr(usage, 'completion_tokens', 0) or 0
+            
+            if prompt_tokens > 0 or completion_tokens > 0:
+                self.wrapper.record_completion(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                )
 
     def on_llm_start(self, **kwargs):
         """Called when LLM execution starts."""
