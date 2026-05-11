@@ -1,0 +1,44 @@
+name: "Dependency Health Check"
+
+on:
+  schedule:
+    # Run weekly on Sunday at midnight UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
+
+jobs:
+  dependency-check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install core package
+      run: pip install -e .
+
+    - name: Smoke test core
+      run: python -c "from src.core.cost import Budget; print('Core OK')"
+
+    - name: Install [mcp] extra
+      run: pip install -e ".[mcp]"
+
+    - name: Smoke test MCP
+      run: python -c "import fastapi, uvicorn; print('MCP OK')"
+
+    - name: Install [crewai] extra
+      run: pip install -e ".[crewai]"
+
+    - name: Smoke test CrewAI
+      run: python -c "from src.integrations.crewai_integration import CREWAI_AVAILABLE; assert CREWAI_AVAILABLE; print('CrewAI OK')"
+
+    - name: Run unit tests
+      run: python -m pytest tests/unit/ -q --ignore=tests/unit/test_budget_aware_tiers_p4_2.py
