@@ -132,6 +132,21 @@ MODEL_REGISTRY: dict[str, ModelCapability] = {
 }
 
 
+def get_capable_models(token_count: int = 0, requires_tools: bool = False, requires_vision: bool = False) -> list[str]:
+    """Return model IDs that can handle the given requirements, sorted by capability (most capable first)."""
+    capable = []
+    for model_id, cap in MODEL_REGISTRY.items():
+        if token_count > 0 and not cap.can_handle_context(token_count):
+            continue
+        if not cap.can_handle_task(requires_tools=requires_tools, requires_vision=requires_vision):
+            continue
+        capable.append((model_id, cap))
+
+    # Sort by capability: free tier first, then by context window size (largest first)
+    capable.sort(key=lambda x: (0 if x[1].is_free_tier else 1, -x[1].context_window))
+    return [m[0] for m in capable]
+
+
 class CapabilityChecker:
     """Checks if a model can handle a given task's requirements."""
 

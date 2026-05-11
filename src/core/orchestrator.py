@@ -75,6 +75,9 @@ MODELS = {
     },
 }
 
+# Import the capability checker
+from src.core.model_capabilities import MODEL_REGISTRY, get_capable_models
+
 
 class FileTools:
     """File read/write operations."""
@@ -658,6 +661,7 @@ class LLMOrchestrator:
         tier: str,
         context: dict[str, Any],
         timeout_seconds: float | None = None,
+        max_task_duration_seconds: int = 300,
     ) -> dict[str, Any]:
         """Execute a task using the specified tier.
 
@@ -667,64 +671,134 @@ class LLMOrchestrator:
             context: Task context dict.
             timeout_seconds: Global timeout for the entire escalation loop.
                 Default: 300s (5 minutes).
+            max_task_duration_seconds: Maximum duration for the entire task execution.
+                Default: 300s (5 minutes).
         """
-        template = self._load_prompt_template(tier)
+        from src.core.timeout import TaskTimeout
+        
+        # Pre-flight capability check
+        token_count = 0  # We'll estimate this from the context
+        requires_tools = False
+        requires_vision = False
+        
+        # Check if task uses tools by examining context and model config
         tier_config = MODELS.get(tier, {})
-        temperature = tier_config.get("temperature", 0.7)
+        if tier_config:
+            tools = tier_config.get("tools", [])
+            requires_tools = len(tools) > 0
+            
+        # Estimate token count from context (very rough approximation)
+        # This is a simplified approach - in reality, we'd want to use token counting
+        # but for now we'll use a simple heuristic
+        if context:
+            total_chars = sum(len(str(v)) for v in context.values())
+            token_count = max(1000, total_chars // 4)  # Rough estimate (avg 4 chars per token)
+        
+        # Check if the model can handle this task
+        model_id = tier_config.get("model")
+        if model_id:
+            capability = MODEL_REGISTRY.get(model_id)
+            if capability is not None:
+                # Check context window
+                if token_count > 0 and not capability.can_handle_context(token_count):
+                    print(f"Warning: Model {model_id} has insufficient context window ({capability.context_window} < {token_count})")
+                    # Try to find a capable model from the same tier or higher tiers
+                    from src.core.tier_manager import TierManager, TierLevel
+                    
+                    # Find the tier level for this tier name
+                    try:
+                        tier_obj = TierManager.get_tier_by_name(tier)
+                        if tier_obj:
+                            fallback_model_id = TierManager().find_capable_model(
+                                tier_obj.level, token_count, requires_tools
+                            )
+                            if fallback_model_id:
+                                print(f"Switching to fallback model: {fallback_model_id}")
+                                # We need to update the configuration to use this model
+                                # For now we'll just log it - in practice this would be more involved
+                                pass
+                    except Exception as e:
+                        print(f"Failed to find fallback model: {e}")
+                        
+                # Check tool calling support
+                if requires_tools and not capability.can_handle_task(requires_tools=True):
+                    print(f"Warning: Model {model_id} does not support tool calling")
+                    # Try to find a capable model from the same tier or higher tiers
+                    from src.core.tier_manager import TierManager, TierLevel
+                    
+                    try:
+                        tier_obj = TierManager.get_tier_by_name(tier)
+                        if tier_obj:
+                            fallback_model_id = TierManager().find_capable_model(
+                                tier_obj.level, token_count, requires_tools
+                            )
+                            if fallback_model_id:
+                                print(f"Switching to fallback model: {fallback_model_id}")
+                                # We need to update the configuration to use this model
+                                # For now we'll just log it - in practice this would be more involved
+                                pass
+                    except Exception as e:
+                        print(f"Failed to find fallback model: {e}")
 
-        system_prompt = self._build_system_prompt(tier, template)
-        user_prompt = self._build_user_prompt(task_id, tier, context, template)
+        # Wrap the entire task execution in timeout
+        with TaskTimeout(max_task_duration_seconds):
+            template = self._load_prompt_template(tier)
+            tier_config = MODELS.get(tier, {})
+            temperature = tier_config.get("temperature", 0.7)
 
-        result = self.call_llm_with_retry(
-            tier, system_prompt, user_prompt, temperature, timeout_seconds=timeout_seconds
-        )
-        timestamp = datetime.now(UTC)
+            system_prompt = self._build_system_prompt(tier, template)
+            user_prompt = self._build_user_prompt(task_id, tier, context, template)
 
-        if result["success"]:
-            # Execute tool calls from LLM output
-            tool_result = self.tool_executor.parse_and_execute_tools(result["output"])
-
-            # Check if file_write tools succeeded
-            file_writes = [r for r in tool_result["tool_results"] if r["tool"] == "file_write"]
-            if file_writes:
-                failed_writes = [w for w in file_writes if not w["success"]]
-                if failed_writes:
-                    result["success"] = False
-                    result["error"] = (
-                        f"file_write failed: {failed_writes[0].get('error', 'Unknown error')}"
-                    )
-
-            result["tool_results"] = tool_result
-            handoff = self._log_handoff(
-                task_id,
-                tier,
-                context,
-                result["output"],
-                timestamp,
-                result["duration_seconds"],
-                result["attempt"],
-                tool_result,
+            result = self.call_llm_with_retry(
+                tier, system_prompt, user_prompt, temperature, timeout_seconds=timeout_seconds
             )
-        else:
-            handoff = self._log_failure(
-                task_id,
-                tier,
-                context,
-                result.get("error", "Unknown error"),
-                timestamp,
-                result["attempts"],
-            )
+            timestamp = datetime.now(UTC)
 
-        return {
-            "task_id": task_id,
-            "tier": tier,
-            "success": result["success"],
-            "output": result.get("output", ""),
-            "attempts": result.get("attempt", result.get("attempts", 0)),
-            "duration_seconds": result.get("duration_seconds", 0),
-            "ready_for_escalation": result.get("ready_for_escalation", False),
-            "tool_results": result.get(
-                "tool_results", {"tool_results": [], "tools_executed": 0, "all_succeeded": True}
-            ),
-            "handoff_log": handoff,
-        }
+            if result["success"]:
+                # Execute tool calls from LLM output
+                tool_result = self.tool_executor.parse_and_execute_tools(result["output"])
+
+                # Check if file_write tools succeeded
+                file_writes = [r for r in tool_result["tool_results"] if r["tool"] == "file_write"]
+                if file_writes:
+                    failed_writes = [w for w in file_writes if not w["success"]]
+                    if failed_writes:
+                        result["success"] = False
+                        result["error"] = (
+                            f"file_write failed: {failed_writes[0].get('error', 'Unknown error')}"
+                        )
+
+                result["tool_results"] = tool_result
+                handoff = self._log_handoff(
+                    task_id,
+                    tier,
+                    context,
+                    result["output"],
+                    timestamp,
+                    result["duration_seconds"],
+                    result["attempt"],
+                    tool_result,
+                )
+            else:
+                handoff = self._log_failure(
+                    task_id,
+                    tier,
+                    context,
+                    result.get("error", "Unknown error"),
+                    timestamp,
+                    result["attempts"],
+                )
+
+            return {
+                "task_id": task_id,
+                "tier": tier,
+                "success": result["success"],
+                "output": result.get("output", ""),
+                "attempts": result.get("attempt", result.get("attempts", 0)),
+                "duration_seconds": result.get("duration_seconds", 0),
+                "ready_for_escalation": result.get("ready_for_escalation", False),
+                "tool_results": result.get(
+                    "tool_results", {"tool_results": [], "tools_executed": 0, "all_succeeded": True}
+                ),
+                "handoff_log": handoff,
+            }

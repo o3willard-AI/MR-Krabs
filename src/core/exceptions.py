@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Custom exceptions for Multi-Tier Orchestrator."""
 
+from typing import Any, Dict
+
 
 class OrchestratorError(Exception):
     """Base exception for orchestrator errors."""
@@ -105,3 +107,30 @@ class BudgetExceededError(OrchestratorError):
     """Budget limit exceeded."""
 
     pass
+
+
+class TaskTimeoutError(OrchestratorError):
+    """Task execution timed out."""
+    
+    def __init__(
+        self, 
+        message: str, 
+        partial_result: dict[str, Any] | None = None,
+        accumulated_cost: float = 0.0,
+        elapsed_seconds: float = 0.0,
+        context: dict[str, Any] | None = None
+    ):
+        self.partial_result = partial_result
+        self.accumulated_cost = accumulated_cost
+        self.elapsed_seconds = elapsed_seconds
+        super().__init__(message, context)
+        
+    def to_dict(self) -> dict:
+        """Convert exception to dictionary for logging."""
+        result = super().to_dict()
+        result.update({
+            "partial_result": self.partial_result,
+            "accumulated_cost": self.accumulated_cost,
+            "elapsed_seconds": self.elapsed_seconds
+        })
+        return result

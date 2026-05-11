@@ -10,6 +10,8 @@ from decimal import Decimal
 from enum import Enum
 from typing import Dict, Optional
 
+from src.core.model_capabilities import MODEL_REGISTRY, get_capable_models
+
 logger = logging.getLogger(__name__)
 
 
@@ -220,6 +222,58 @@ class TierManager:
     def get_max_tier(cls) -> Tier:
         """Get the maximum tier (most expensive)."""
         return cls.TIER_ORDER[-1]
+
+    def find_capable_model(self, tier_level: TierLevel, token_count: int = 0, requires_tools: bool = False) -> str | None:
+        """
+        Find a model within the specified tier that can handle the requirements.
+        
+        If no capable model is found in the current tier, escalate to the next tier
+        until a capable model is found or all tiers are exhausted.
+        
+        Args:
+            tier_level: The starting tier level to search from
+            token_count: Required context size (in tokens)
+            requires_tools: Whether the task requires tool calling support
+            
+        Returns:
+            Model ID string if found, None otherwise
+        """
+        # Find the starting tier
+        current_tier = self.get_tier(tier_level)
+        
+        # Check if the current tier's model can handle the requirements
+        current_model_id = current_tier.model
+        capability = MODEL_REGISTRY.get(current_model_id)
+        
+        # If we have capability data for this model, check if it meets requirements
+        if capability is not None:
+            if token_count > 0 and not capability.can_handle_context(token_count):
+                # Context window too small - skip to next tier
+                pass
+            elif not capability.can_handle_task(requires_tools=requires_tools):
+                # Tool calling not supported - skip to next tier
+                pass
+            else:
+                # Model is capable, return it
+                return current_model_id
+        
+        # If we can't use the current tier's model, look for a capable model in higher tiers
+        current_index = self.TIER_ORDER.index(current_tier)
+        for i in range(current_index + 1, len(self.TIER_ORDER)):
+            next_tier = self.TIER_ORDER[i]
+            next_model_id = next_tier.model
+            
+            # Check if this tier's model can handle the requirements
+            capability = MODEL_REGISTRY.get(next_model_id)
+            if capability is not None:
+                if token_count > 0 and not capability.can_handle_context(token_count):
+                    continue  # Skip this tier, context window too small
+                if not capability.can_handle_task(requires_tools=requires_tools):
+                    continue  # Skip this tier, tool calling not supported
+                return next_model_id  # Found a capable model
+        
+        # If we get here, no capable model found in any tier
+        return None
     
     def select_tier(self, task_complexity: str = "medium", budget_remaining_percent: Decimal = Decimal("1.0"),
                     force_tier: Optional[TierLevel] = None) -> tuple[Tier, bool, str]:

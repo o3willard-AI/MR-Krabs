@@ -52,6 +52,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "multipliers": [1.0, 0.7, 0.4],
     },
     "task_timeout_seconds": 300,
+    "max_task_duration_seconds": 300,
 }
 
 
