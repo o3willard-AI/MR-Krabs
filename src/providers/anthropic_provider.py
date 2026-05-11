@@ -288,7 +288,7 @@ class AnthropicProvider:
                 "success": True,
                 "output": output,
                 "tokens": tokens,
-                "cost": float(actual_cost),
+                "cost": actual_cost,
                 "model": response.model,
                 "tier": pricing["tier"],
                 "duration_seconds": 0,  # Anthropic doesn't provide duration
@@ -299,7 +299,7 @@ class AnthropicProvider:
                 "success": False,
                 "error": str(e),
                 "tokens": TokenCount(input_tokens=input_tokens),
-                "cost": 0.0,
+                "cost": Decimal("0.0"),
                 "model": model,
                 "tier": pricing["tier"],
             }

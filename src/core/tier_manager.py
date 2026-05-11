@@ -42,28 +42,28 @@ class BudgetTierConfig:
     # Map of budget percentage thresholds to preferred tier levels
     # Example: {0.3: "L0", 0.5: "L1", 0.8: "L2"}
     # Means: if budget > 80% remaining, can use L2; if 50-80%, use L1; if < 30%, use L0
-    budget_tier_thresholds: Dict[float, TierLevel] = field(default_factory=lambda: {
-        0.8: TierLevel.L2,
-        0.5: TierLevel.L1,
-        0.3: TierLevel.L0,
+    budget_tier_thresholds: Dict[Decimal, TierLevel] = field(default_factory=lambda: {
+        Decimal("0.8"): TierLevel.L2,
+        Decimal("0.5"): TierLevel.L1,
+        Decimal("0.3"): TierLevel.L0,
     })
     
     # Simple task classification (tasks that don't need high intelligence)
     # These are candidates for budget-aware tier reduction
-    simple_task_thresholds: Dict[str, float] = field(default_factory=lambda: {
-        "simple": 0.0,  # Always prefer cheapest for simple tasks
-        "medium": 0.3,  # Use cheap tier unless budget > 30%
-        "complex": 0.6,  # Only use expensive tier if budget > 60%
+    simple_task_thresholds: Dict[str, Decimal] = field(default_factory=lambda: {
+        "simple": Decimal("0.0"),  # Always prefer cheapest for simple tasks
+        "medium": Decimal("0.3"),  # Use cheap tier unless budget > 30%
+        "complex": Decimal("0.6"),  # Only use expensive tier if budget > 60%
     })
     
     # Budget-aware tier preference settings
     enable_budget_awareness: bool = True
-    budget_restriction_minimum: float = 0.15  # Below 15%, restrict to L0 unless forced
+    budget_restriction_minimum: Decimal = Decimal("0.15")  # Below 15%, restrict to L0 unless forced
     
     # Log budget-aware decisions
     log_budget_decisions: bool = True
     
-    def get_preferred_tier(self, budget_remaining_percent: float) -> TierLevel:
+    def get_preferred_tier(self, budget_remaining_percent: Decimal) -> TierLevel:
         """Get preferred tier level based on budget remaining percentage."""
         if not self.enable_budget_awareness:
             return TierLevel.L1  # Default to medium tier
@@ -81,7 +81,7 @@ class BudgetTierConfig:
         
         return preferred_tier
     
-    def should_restrict_tier(self, task_complexity: str, budget_remaining_percent: float) -> tuple[bool, TierLevel]:
+    def should_restrict_tier(self, task_complexity: str, budget_remaining_percent: Decimal) -> tuple[bool, TierLevel]:
         """
         Determine if tier should be restricted based on budget and task complexity.
         
@@ -95,7 +95,7 @@ class BudgetTierConfig:
         preferred_tier = self.get_preferred_tier(budget_remaining_percent)
         
         # Apply task complexity adjustments
-        complexity_threshold = self.simple_task_thresholds.get(task_complexity.lower(), 0.5)
+        complexity_threshold = self.simple_task_thresholds.get(task_complexity.lower(), Decimal("0.5"))
         
         if budget_remaining_percent < complexity_threshold:
             return (True, TierLevel.L0)
@@ -221,7 +221,7 @@ class TierManager:
         """Get the maximum tier (most expensive)."""
         return cls.TIER_ORDER[-1]
     
-    def select_tier(self, task_complexity: str = "medium", budget_remaining_percent: float = 1.0,
+    def select_tier(self, task_complexity: str = "medium", budget_remaining_percent: Decimal = Decimal("1.0"),
                     force_tier: Optional[TierLevel] = None) -> tuple[Tier, bool, str]:
         """
         Select tier based on budget awareness and task complexity.
@@ -247,7 +247,7 @@ class TierManager:
         # Determine selected tier
         if should_restrict:
             selected_tier = self.get_tier(TierLevel.L0)
-            reason = f"Budget restriction (<{self.budget_config.simple_task_thresholds.get(task_complexity.lower(), 0.5)*100:.0f}%): selecting L0"
+            reason = f"Budget restriction (<{self.budget_config.simple_task_thresholds.get(task_complexity.lower(), Decimal('0.5'))*100:.0f}%): selecting L0"
             was_restricted = True
         else:
             selected_tier = self.get_tier(preferred_tier)
@@ -260,12 +260,12 @@ class TierManager:
         
         return (selected_tier, was_restricted, reason)
     
-    def get_budget_aware_status(self, budget_remaining_percent: float) -> Dict:
+    def get_budget_aware_status(self, budget_remaining_percent: Decimal) -> Dict:
         """Get budget-aware tier selection status."""
         preferred_tier = self.budget_config.get_preferred_tier(budget_remaining_percent)
         
         return {
-            "budget_remaining_percent": budget_remaining_percent,
+            "budget_remaining_percent": float(budget_remaining_percent),
             "preferred_tier": preferred_tier.value,
             "enable_budget_awareness": self.budget_config.enable_budget_awareness,
             "budget_tier_thresholds": {str(k): v.value for k, v in self.budget_config.budget_tier_thresholds.items()},

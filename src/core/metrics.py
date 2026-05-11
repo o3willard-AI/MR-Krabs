@@ -21,7 +21,7 @@ class TaskMetrics:
     tools_executed: int
     tools_succeeded: int
     tokens_estimate: int = 0
-    cost_estimate_usd: float = 0.0
+    cost_estimate_usd: Decimal = Decimal("0.0")
 
 
 @dataclass
@@ -35,7 +35,7 @@ class TierMetrics:
     total_duration: float = 0.0
     total_attempts: int = 0
     total_tools: int = 0
-    total_cost: float = 0.0
+    total_cost: Decimal = Decimal("0.0")
 
     @property
     def success_rate(self) -> float:
@@ -92,7 +92,7 @@ class MetricsCollector:
         tokens: int = 0,
     ) -> TaskMetrics:
         """Record metrics for a task execution."""
-        cost = self.TIER_COSTS.get(tier, 0.0) * tokens
+        cost = Decimal(str(self.TIER_COSTS.get(tier, 0.0))) * Decimal(tokens)
 
         metrics = TaskMetrics(
             task_id=task_id,
@@ -136,15 +136,15 @@ class MetricsCollector:
             "total_tasks": total_tasks,
             "successful_tasks": total_success,
             "failed_tasks": total_tasks - total_success,
-            "overall_success_rate": total_success / total_tasks if total_tasks > 0 else 0.0,
-            "total_cost_usd": total_cost,
+            "overall_success_rate": float(total_success / total_tasks if total_tasks > 0 else 0.0),
+            "total_cost_usd": float(total_cost),
             "tiers": {
                 tier: {
                     "tasks": tm.total_tasks,
-                    "success_rate": tm.success_rate,
-                    "avg_duration": tm.avg_duration,
-                    "avg_attempts": tm.avg_attempts,
-                    "cost": tm.total_cost,
+                    "success_rate": float(tm.success_rate),
+                    "avg_duration": float(tm.avg_duration),
+                    "avg_attempts": float(tm.avg_attempts),
+                    "cost": float(tm.total_cost),
                 }
                 for tier, tm in self.tier_metrics.items()
             },

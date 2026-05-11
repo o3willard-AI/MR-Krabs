@@ -233,7 +233,7 @@ class OpenAIProvider:
                 "success": True,
                 "output": output,
                 "tokens": tokens,
-                "cost": float(actual_cost),
+                "cost": actual_cost,
                 "model": model_name,
                 "tier": pricing["tier"],
                 "duration_seconds": response.response_ms / 1000 if hasattr(response, 'response_ms') else 0,
@@ -247,7 +247,7 @@ class OpenAIProvider:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=0,
                 ),
-                "cost": 0.0,
+                "cost": Decimal("0.0"),
                 "model": model,
                 "tier": pricing["tier"],
             }
@@ -307,7 +307,7 @@ class OpenAIProvider:
                     completion_tokens=0,
                     total_tokens=input_tokens,
                 ),
-                "cost": float(cost),
+                "cost": cost,
                 "model": model,
             }
             
@@ -316,7 +316,7 @@ class OpenAIProvider:
                 "success": False,
                 "error": str(e),
                 "tokens": TokenCount(prompt_tokens=input_tokens),
-                "cost": 0.0,
+                "cost": Decimal("0.0"),
                 "model": model,
             }
     
