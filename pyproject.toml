@@ -35,11 +35,10 @@ dependencies = [
     "rich>=13.7.0",
     "click>=8.1.7",
     "structlog>=23.2.0",
-    # CrewAI multi-agent framework (required for Phase 3+)
-    "crewai>=0.70.0,<1.0.0",
-    # MCP Server dependencies (Phase 0+)
-    # fastapi and uvicorn moved to optional [mcp] extra for pure-library installs
+    # CrewAI and MCP deps moved to optional extras below
 ]
+    # fastapi and uvicorn moved to optional [mcp] extra for pure-library installs
+
 
 [project.optional-dependencies]
 dev = [
@@ -55,6 +54,7 @@ mcp = [
     "fastapi>=0.109.0",
     "uvicorn>=0.27.0",
 ]
+crewai = ["crewai>=0.70.0,<1.0.0"]
 
 [project.scripts]
 cost-orchestrator = "src.cli.main:main"

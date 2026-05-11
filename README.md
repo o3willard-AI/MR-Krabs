@@ -59,20 +59,39 @@ Instead of always using expensive models like GPT-4, this tool tries cheap model
 
 ### Installation
 
+Choose the install that fits your needs:
+
 ```bash
-# Install MR-Krabs (includes CrewAI multi-agent framework automatically)
+# Option 1: Core library only (lightweight, no extra frameworks)
 pip install cost-orchestrator
 
-# Verify installation
-python -c "from crewai import Agent, Task, Crew; print('✅ CrewAI ready!')"
+# Option 2: With CrewAI multi-agent support
+pip install "cost-orchestrator[crewai]"
+
+# Option 3: With MCP server (FastAPI REST API)
+pip install "cost-orchestrator[mcp]"
+
+# Option 4: Everything
+pip install "cost-orchestrator[crewai,mcp]"
 ```
 
-**Note**: CrewAI (multi-agent framework) is a required dependency and installs automatically (~500MB including dependencies).
+**Verify:**
+
+```bash
+# Core install check
+python -c "from src.core.cost import Budget; print('✅ Core OK')"
+
+# CrewAI check (if you installed [crewai])
+python -c "from src.integrations.crewai_integration import CREWAI_AVAILABLE; print('✅ CrewAI OK' if CREWAI_AVAILABLE else 'ℹ️ CrewAI not installed')"
+
+# MCP server check (if you installed [mcp])
+python -c "import fastapi; print('✅ MCP server OK')"
+```
 
 ### First Task
 
 ```bash
-export OPENROUTER_API_KEY="sk-or-..."
+export OPENROUTER_API_KEY="sk-or-v1-..."
 ```
 
 ```python
