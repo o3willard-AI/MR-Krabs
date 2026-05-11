@@ -139,36 +139,7 @@ class SessionCloseResponse(BaseModel):
 
 # ==================== Authentication ====================
 
-def verify_api_key(authorization: Optional[str] = Header(None)):
-    """
-    Verify API key if required.
-    
-    If MCP_API_KEY environment variable is set, requires 
-    Authorization: Bearer <key> header.
-    """
-    api_key = os.getenv("MCP_API_KEY")
-    
-    if api_key:
-        if not authorization:
-            raise HTTPException(
-                status_code=401,
-                detail="Authorization header required"
-            )
-        
-        # Extract bearer token
-        parts = authorization.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            raise HTTPException(
-                status_code=401,
-                detail="Invalid authorization header format. Use: Bearer <token>"
-            )
-        
-        token = parts[1]
-        if token != api_key:
-            raise HTTPException(
-                status_code=403,
-                detail="Invalid API key"
-            )
+# Remove the old verify_api_key function since we're using middleware now
 
 
 # ==================== Health & Status Endpoints ====================
@@ -258,8 +229,7 @@ async def list_tools():
 # ==================== Session Management Tools ====================
 
 @app.post("/tools/mcp_mrkrabs_session_init", 
-         summary="Initialize session",
-         dependencies=[Depends(verify_api_key)])
+         summary="Initialize session")
 async def session_init(request: SessionInitRequest):
     """
     Initialize a new MCP session.
@@ -293,8 +263,7 @@ async def session_init(request: SessionInitRequest):
 
 
 @app.get("/tools/mcp_mrkrabs_session_status/{session_id}",
-         summary="Get session status",
-         dependencies=[Depends(verify_api_key)])
+         summary="Get session status")
 async def session_status(session_id: str):
     """
     Check the status of a session.
@@ -325,8 +294,7 @@ async def session_status(session_id: str):
 
 
 @app.delete("/tools/mcp_mrkrabs_session_close/{session_id}",
-            summary="Close session",
-            dependencies=[Depends(verify_api_key)])
+            summary="Close session")
 async def session_close(session_id: str):
     """
     Close and delete a session.
@@ -345,8 +313,7 @@ async def session_close(session_id: str):
 # ==================== Ping/Health Tool ====================
 
 @app.post("/tools/mcp_mrkrabs_ping", 
-          summary="Ping server",
-          dependencies=[Depends(verify_api_key)])
+          summary="Ping server")
 async def ping(request: PingRequest):
     """
     Test MCP connectivity.
@@ -369,8 +336,7 @@ async def ping(request: PingRequest):
 # ==================== Cost Management Tools (Phase 1) ====================
 
 @app.post("/tools/mcp_mrkrabs_cost_estimate", 
-          summary="Estimate LLM cost",
-          dependencies=[Depends(verify_api_key)])
+          summary="Estimate LLM cost")
 async def cost_estimate(request: CostEstimateRequest):
     """
     Estimate the cost of LLM usage.
@@ -410,8 +376,7 @@ async def cost_estimate(request: CostEstimateRequest):
 
 
 @app.post("/tools/mcp_mrkrabs_budget_check", 
-          summary="Check budget availability",
-          dependencies=[Depends(verify_api_key)])
+          summary="Check budget availability")
 async def budget_check(request: BudgetCheckRequest):
     """
     Check if a spending operation can proceed within budget.
@@ -477,8 +442,7 @@ async def budget_check(request: BudgetCheckRequest):
 
 
 @app.post("/tools/mcp_mrkrabs_cost_track", 
-          summary="Record actual spending",
-          dependencies=[Depends(verify_api_key)])
+          summary="Record actual spending")
 async def cost_track(request: CostTrackRequest):
     """
     Record actual spending for a session.
@@ -547,8 +511,7 @@ async def cost_track(request: CostTrackRequest):
 # ==================== CrewAI Orchestration Tools (Phase 2) ====================
 
 @app.post("/tools/mcp_mrkrabs_crew_create", 
-          summary="Create CrewAI crew",
-          dependencies=[Depends(verify_api_key)])
+          summary="Create CrewAI crew")
 async def crew_create(request: CrewCreateRequest):
     """
     Create and validate a CrewAI multi-agent crew.
@@ -605,8 +568,7 @@ async def crew_create(request: CrewCreateRequest):
 
 
 @app.post("/tools/mcp_mrkrabs_crew_execute", 
-          summary="Execute CrewAI crew",
-          dependencies=[Depends(verify_api_key)])
+          summary="Execute CrewAI crew")
 async def crew_execute(request: CrewExecuteRequest):
     """
     Execute a CrewAI multi-agent crew workflow.
@@ -642,8 +604,7 @@ async def crew_execute(request: CrewExecuteRequest):
 
 
 @app.post("/tools/mcp_mrkrabs_agent_execute", 
-          summary="Execute single agent task",
-          dependencies=[Depends(verify_api_key)])
+          summary="Execute single agent task")
 async def agent_execute(request: AgentExecuteRequest):
     """
     Execute a single agent task with MR-Krabs cost optimization.
@@ -675,8 +636,7 @@ async def agent_execute(request: AgentExecuteRequest):
 # ==================== Analytics Tools (Phase 3) ====================
 
 @app.post("/tools/mcp_mrkrabs_analytics_summary", 
-          summary="Get analytics summary",
-          dependencies=[Depends(verify_api_key)])
+          summary="Get analytics summary")
 async def analytics_summary(request: AnalyticsSummaryRequest):
     """
     Get overall spending summary and efficiency metrics.
@@ -715,8 +675,7 @@ async def analytics_summary(request: AnalyticsSummaryRequest):
 
 
 @app.post("/tools/mcp_mrkrabs_tier_breakdown", 
-          summary="Get tier cost breakdown",
-          dependencies=[Depends(verify_api_key)])
+          summary="Get tier cost breakdown")
 async def tier_breakdown(request: TierBreakdownRequest):
     """
     Get detailed cost breakdown by tier (L0/L1/L2/L3).
@@ -752,8 +711,7 @@ async def tier_breakdown(request: TierBreakdownRequest):
 
 
 @app.post("/tools/mcp_mrkrabs_cost_trends", 
-          summary="Get cost trend analysis",
-          dependencies=[Depends(verify_api_key)])
+          summary="Get cost trend analysis")
 async def cost_trends(request: CostTrendsRequest):
     """
     Get cost trend analysis over time with ASCII visualization.
@@ -789,8 +747,7 @@ async def cost_trends(request: CostTrendsRequest):
 
 
 @app.post("/tools/mcp_mrkrabs_efficiency_report", 
-          summary="Get efficiency report",
-          dependencies=[Depends(verify_api_key)])
+          summary="Get efficiency report")
 async def efficiency_report(request: EfficiencyReportRequest):
     """
     Get comprehensive efficiency analysis and optimization suggestions.
@@ -828,8 +785,7 @@ async def efficiency_report(request: EfficiencyReportRequest):
 # ==================== Export Tools ====================
 
 @app.post("/tools/mcp_mrkrabs_export_csv", 
-          summary="Export analytics to CSV",
-          dependencies=[Depends(verify_api_key)])
+          summary="Export analytics to CSV")
 async def export_csv(request: ExportRequest):
     """
     Export analytics data to CSV format.
@@ -871,8 +827,7 @@ async def export_csv(request: ExportRequest):
 
 
 @app.post("/tools/mcp_mrkrabs_export_json", 
-          summary="Export analytics to JSON",
-          dependencies=[Depends(verify_api_key)])
+          summary="Export analytics to JSON")
 async def export_json(request: ExportRequest):
     """
     Export analytics data to JSON format.
@@ -954,6 +909,21 @@ async def shutdown_event():
 
 def create_app() -> FastAPI:
     """Create and configure the FastAPI app."""
+    
+    # Import here to avoid circular imports
+    from .auth import AuthManager, KeyManager, RateLimiter, AuthMiddleware
+    
+    auth_manager = AuthManager(secret_key=os.getenv("JWT_SECRET", "change-me"))
+    key_manager = KeyManager()
+    # Seed with existing MCP_API_KEY if set
+    if existing_key := os.getenv("MCP_API_KEY"):
+        key_manager.add_key(existing_key, "legacy")
+    rate_limiter = RateLimiter(
+        max_requests=int(os.getenv("RATE_LIMIT_MAX", "100")),
+        window_seconds=int(os.getenv("RATE_LIMIT_WINDOW", "60"))
+    )
+    app.add_middleware(AuthMiddleware, auth_manager=auth_manager, key_manager=key_manager, rate_limiter=rate_limiter)
+    
     return app
 
 

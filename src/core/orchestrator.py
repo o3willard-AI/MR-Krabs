@@ -459,27 +459,6 @@ class LLMOrchestrator:
                     result.append(line)
                 continue
 
-            if i in signatures:
-                result.append(line)
-                in_function = True
-                body_lines_added = 0
-                continue
-
-            if in_function and stripped and not stripped.startswith("#"):
-                if line and (line[0] != " " and line[0] != "\t"):
-                    in_function = False
-                    if len(result) < max_lines:
-                        result.append(line)
-                elif body_lines_added < max_body_lines:
-                    result.append(line)
-                    body_lines_added += 1
-                else:
-                    result.append(f"{line[:4]}... # [body truncated]")
-                    in_function = False
-            else:
-                if len(result) < max_lines:
-                    result.append(line)
-
         result.append(f"\n# [Truncated from {len(lines)} to {len(result)} lines]")
         return "\n".join(result)
 
