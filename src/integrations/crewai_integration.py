@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from pathlib import Path
@@ -68,8 +69,8 @@ class CrewAIConfig:
     enable_cost_tracking: bool = True
     
     # Budget configuration
-    daily_budget_usd: float = 10.0
-    task_limit_usd: float = 1.0
+    daily_budget_usd: Decimal = Decimal("10.0")
+    task_limit_usd: Decimal = Decimal("1.0")
     
     # Tier mapping configuration
     auto_tier_mapping: bool = True
@@ -91,8 +92,8 @@ class CrewAICostTracker:
         
         # Initialize budget and cost tracker
         budget = Budget(
-            daily_limit_usd=Budget._dataclasses_default(daily_limit_usd=self.config.daily_budget_usd),
-            task_limit_usd=Budget._dataclasses_default(task_limit_usd=self.config.task_limit_usd),
+            daily_limit_usd=self.config.daily_budget_usd,
+            task_limit_usd=self.config.task_limit_usd,
             failure_mode=self.config.failure_mode,
         )
         
@@ -182,6 +183,9 @@ class CrewAICostTracker:
         
         cost = tier.cost_per_1k_tokens.get('prompt', 0) * (prompt_tokens / 1000) + \
                tier.cost_per_1k_tokens.get('completion', 0) * (completion_tokens / 1000)
+        
+        # Convert to Decimal for consistent arithmetic
+        cost = Decimal(str(cost))
         
         # Track in cost tracker
         try:

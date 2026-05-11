@@ -21,9 +21,9 @@ class TestBudgetTierConfig:
         """Test default budget-tier thresholds."""
         config = BudgetTierConfig()
         assert config.budget_tier_thresholds == {
-            0.8: TierLevel.L2,
-            0.5: TierLevel.L1,
-            0.3: TierLevel.L0,
+            Decimal("0.8"): TierLevel.L2,
+            Decimal("0.5"): TierLevel.L1,
+            Decimal("0.3"): TierLevel.L0,
         }
     
     def test_get_preferred_tier_above_thresholds(self):

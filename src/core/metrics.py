@@ -4,6 +4,7 @@
 import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -162,8 +163,21 @@ class MetricsCollector:
             "task_metrics": [asdict(tm) for tm in self.task_metrics[-100:]],
         }
 
+        # Convert Decimal values to float for JSON serialization
+        def convert_decimals_to_float(obj):
+            if isinstance(obj, dict):
+                return {key: convert_decimals_to_float(value) for key, value in obj.items()}
+            elif isinstance(obj, list):
+                return [convert_decimals_to_float(item) for item in obj]
+            elif isinstance(obj, Decimal):
+                return float(obj)
+            else:
+                return obj
+
+        serializable_data = convert_decimals_to_float(data)
+
         with open(filepath, "w") as f:
-            json.dump(data, f, indent=2)
+            json.dump(serializable_data, f, indent=2)
 
         return filepath
 

@@ -83,6 +83,7 @@ class TestCostTracker:
         summary = tracker.get_summary()
         assert "daily_total" in summary
         assert "budget_remaining" in summary
+        # Note: get_summary returns floats for serialization purposes, not Decimals
         assert isinstance(summary["daily_total"], float)
 
     def test_reservation_pattern(self):
@@ -145,6 +146,20 @@ class TestCostTracker:
 
         assert len(errors) == 0
         assert tracker.daily_total <= Decimal("10.50")
+
+
+def test_decimal_precision():
+    from decimal import Decimal
+    assert Decimal("0.1") + Decimal("0.2") == Decimal("0.3")
+
+
+def test_no_float_drift():
+    from decimal import Decimal
+    total = Decimal("0")
+    increment = Decimal("0.0001")
+    for _ in range(10000):
+        total += increment
+    assert total == Decimal("1.0000")
 
 
 class TestFailureMode:

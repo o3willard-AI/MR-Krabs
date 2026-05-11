@@ -137,7 +137,7 @@ def cmd_doctor() -> int:
 
         budget = config_to_budget(config)
         print(
-            f"[PASS] Budget: ${float(budget.daily_limit_usd):.2f}/day "
+            f"[PASS] Budget: ${budget.daily_limit_usd:.2f}/day "
             f"(mode: {budget.failure_mode.value})"
         )
     except Exception as e:
@@ -195,10 +195,10 @@ def cmd_dry_run(description: str, tier: str | None = None) -> int:
     print(f"  Initial tier: {selected_tier} ({model_name})")
     print(f"  Estimated tokens: ~{prompt_tokens} prompt + ~{estimated_completion} completion")
     print(
-        f"  Estimated cost: ${float(min_cost):.4f} (L0) to "
-        f"${float(min_cost) * 10:.4f} (if escalated)"
+        f"  Estimated cost: ${min_cost:.4f} (L0) to "
+        f"${min_cost * 10:.4f} (if escalated)"
     )
-    print(f"  Budget remaining: ${float(budget.daily_limit_usd - tracker.daily_total):.2f}")
+    print(f"  Budget remaining: ${budget.daily_limit_usd - tracker.daily_total:.2f}")
     print()
     print("No LLM API calls were made.")
     return 0

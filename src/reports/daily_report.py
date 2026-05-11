@@ -287,7 +287,13 @@ class DailyCostReportGenerator:
         lines.append("Tier Breakdown:")
         for tier, cost in sorted(cost_by_tier.items(),
                                   key=lambda x: x[1], reverse=True):
-            pct = float(cost / total_cost * 100) if total_cost > 0 else 0
+            # Calculate percentage using Decimal arithmetic
+            if total_cost > 0:
+                percentage = (cost / total_cost) * Decimal("100")
+            else:
+                percentage = Decimal("0.0")
+            
+            pct = float(percentage)
             lines.append(f"  {tier:15s}  ${cost:>10.2f}  ({pct:5.1f}%)")
         
         return "\n".join(lines)

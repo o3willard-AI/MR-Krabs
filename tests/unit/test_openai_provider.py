@@ -124,7 +124,7 @@ class TestOpenAIProvider:
         assert "tokens" in result
         assert result["tokens"].total_tokens == 150
         assert result["success"] == True
-        assert isinstance(result["cost"], float)
+        assert isinstance(result["cost"], (float, Decimal))
         assert result["cost"] > 0
 
     def test_chat_completions_create_error(self):

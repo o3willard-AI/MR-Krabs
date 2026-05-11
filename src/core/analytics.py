@@ -35,7 +35,7 @@ class TierAnalytics:
     
     def __post_init__(self):
         """Calculate derived metrics."""
-        self._success_rate = 0.0
+        self._success_rate = Decimal("0.0")
         self._avg_cost_per_success = Decimal("0.0")
         self._update_metrics()
     
@@ -66,7 +66,7 @@ class TierAnalytics:
         """Update derived metrics."""
         if self.total_attempts > 0:
             self._success_rate = (
-                self.successful_attempts / self.total_attempts * 100
+                Decimal(str(self.successful_attempts)) / Decimal(str(self.total_attempts)) * Decimal("100")
             )
         
         if self.successful_attempts > 0:
@@ -230,21 +230,21 @@ class AnalyticsSummary:
         self, 
         current_tier: str, 
         suggested_tier: str
-    ) -> float:
+    ) -> Decimal:
         """Calculate potential savings from tier change."""
         if current_tier not in self.tier_analytics:
-            return 0.0
+            return Decimal("0.0")
         
         current_cost = self.tier_analytics[current_tier].total_cost
         
         # Estimate savings (very rough)
         # Convert to float first to avoid Decimal * float error
-        return float(Decimal(str(current_cost)) * Decimal("0.7"))  # Assume 70% savings
+        return Decimal(str(current_cost)) * Decimal("0.7")  # Assume 70% savings
     
-    def _calculate_l0_savings(self) -> float:
+    def _calculate_l0_savings(self) -> Decimal:
         """Calculate savings from L0 usage."""
         if not self.tier_analytics.get("L0-Planner"):
-            return 0.0
+            return Decimal("0.0")
         
         l0_cost = self.tier_analytics["L0-Planner"].total_cost
         l3_cost = Decimal("0.12")  # GPT-4o cost per task
@@ -252,7 +252,7 @@ class AnalyticsSummary:
         # If all tasks used L3, cost would be:
         all_l3_cost = Decimal(str(self.total_tasks * 0.12))
         
-        return float(all_l3_cost - self.total_cost)
+        return all_l3_cost - self.total_cost
     
     def get_tier_breakdown(self) -> Dict[str, Dict]:
         """Get tier breakdown for display."""
@@ -261,9 +261,9 @@ class AnalyticsSummary:
         for tier, analytics in self.tier_analytics.items():
             breakdown[tier] = {
                 "attempts": analytics.total_attempts,
-                "success_rate": analytics.avg_success_rate,
+                "success_rate": float(analytics._success_rate),
                 "cost": float(analytics.total_cost),
-                "avg_cost": float(analytics.avg_cost_per_success),
+                "avg_cost": float(analytics._avg_cost_per_success),
                 "status": self._get_tier_status(analytics),
             }
         
@@ -283,7 +283,7 @@ class AnalyticsSummary:
         return {
             "generated_at": self.generated_at,
             "total_tasks": self.total_tasks,
-            "overall_success_rate": self.overall_success_rate,
+            "overall_success_rate": float(self.overall_success_rate),
             "total_cost": float(self.total_cost),
             "avg_cost_per_task": float(self.avg_cost_per_task),
             "tier_breakdown": self.get_tier_breakdown(),
@@ -359,8 +359,8 @@ class AnalyticsCollector:
             total_tasks=self.total_tasks,
             total_cost=self.total_cost,
             overall_success_rate=(
-                self.successful_tasks / self.total_tasks * 100
-                if self.total_tasks > 0 else 0
+                Decimal(str(self.successful_tasks)) / Decimal(str(self.total_tasks)) * Decimal("100")
+                if self.total_tasks > 0 else Decimal("0.0")
             ),
             avg_cost_per_task=(
                 self.total_cost / self.total_tasks
@@ -377,14 +377,14 @@ class AnalyticsCollector:
         # Add provider analytics
         for provider, data in self.provider_data.items():
             success_rate = (
-                data["successful_tasks"] / data["total_tasks"] * 100
-                if data["total_tasks"] > 0 else 0
+                Decimal(str(data["successful_tasks"])) / Decimal(str(data["total_tasks"])) * Decimal("100")
+                if data["total_tasks"] > 0 else Decimal("0.0")
             )
             
             summary.add_provider_analytics(provider, {
                 "total_cost": data["total_cost"],
                 "total_tasks": data["total_tasks"],
-                "success_rate": success_rate,
+                "success_rate": float(success_rate),
             })
         
         # Generate recommendations

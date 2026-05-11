@@ -183,7 +183,7 @@ class LangChainCostCallbackHandler(BaseCallbackHandler):
     
     def __init__(
         self,
-        budget: Optional[float] = None,
+        budget: Optional[Decimal] = None,
         verbose: bool = False
     ):
         """Initialize LangChain cost callback handler.
@@ -563,7 +563,7 @@ class LangChainCostCallbackHandler(BaseCallbackHandler):
         
         return tokens
     
-    def _calculate_cost(self, model_name: str, tokens: Dict[str, int]) -> float:
+    def _calculate_cost(self, model_name: str, tokens: Dict[str, int]) -> Decimal:
         """Calculate cost for a model and token counts."""
         # Normalize model name
         model_key = model_name.lower()
@@ -582,17 +582,18 @@ class LangChainCostCallbackHandler(BaseCallbackHandler):
             tokens.get("completion_tokens", 0) * pricing.get("completion", 0) / 1000
         )
         
-        return cost
+        # Convert to Decimal for consistency
+        return Decimal(str(cost))
     
     def get_summary(self) -> Dict[str, Any]:
         """Get cost summary."""
         return self.tracker.get_summary()
     
-    def get_daily_spending(self) -> float:
+    def get_daily_spending(self) -> Decimal:
         """Get daily spending."""
-        return float(self.tracker._daily_spent)
+        return self.tracker._daily_spent
     
-    def get_remaining_budget(self) -> float:
+    def get_remaining_budget(self) -> Decimal:
         """Get remaining budget."""
         return self.tracker.get_remaining_budget()
     
