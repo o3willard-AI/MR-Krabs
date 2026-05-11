@@ -38,8 +38,7 @@ dependencies = [
     # CrewAI multi-agent framework (required for Phase 3+)
     "crewai>=0.70.0,<1.0.0",
     # MCP Server dependencies (Phase 0+)
-    "fastapi>=0.109.0",
-    "uvicorn>=0.27.0",
+    # fastapi and uvicorn moved to optional [mcp] extra for pure-library installs
 ]
 
 [project.optional-dependencies]
@@ -52,6 +51,10 @@ dev = [
     "pre-commit>=3.6.0",
 ]
 metrics = ["prometheus-client>=0.19.0"]
+mcp = [
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+]
 
 [project.scripts]
 cost-orchestrator = "src.cli.main:main"
