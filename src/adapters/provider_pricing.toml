@@ -1,0 +1,29 @@
+# MR-Krabs Provider Pricing Registry
+# Last updated: May 2026
+# Sources: Official provider pricing pages
+
+[providers.openai]
+"gpt-4o" = { input_per_1k = 0.00250, output_per_1k = 0.01000, source = "https://openai.com/pricing" }
+"gpt-4o-mini" = { input_per_1k = 0.00015, output_per_1k = 0.00060, source = "https://openai.com/pricing" }
+"gpt-4-turbo" = { input_per_1k = 0.01000, output_per_1k = 0.03000, source = "https://openai.com/pricing", note = "preview model" }
+
+[providers.anthropic]
+"claude-sonnet-4-20250514" = { input_per_1k = 0.00300, output_per_1k = 0.01500, source = "https://anthropic.com/pricing" }
+"claude-haiku-3-5" = { input_per_1k = 0.00080, output_per_1k = 0.00400, source = "https://anthropic.com/pricing" }
+
+[providers.deepseek]
+"deepseek-chat" = { input_per_1k = 0.00014, output_per_1k = 0.00028, source = "https://deepseek.com/pricing" }
+"deepseek-reasoner" = { input_per_1k = 0.00055, output_per_1k = 0.00219, source = "https://deepseek.com/pricing" }
+
+[providers.groq]
+"llama-4-scout-17b-16e" = { input_per_1k = 0.00010, output_per_1k = 0.00030, source = "https://groq.com/pricing" }
+"mixtral-8x7b-32768" = { input_per_1k = 0.00027, output_per_1k = 0.00027, source = "https://groq.com/pricing" }
+
+[providers.mistral]
+"mistral-small-latest" = { input_per_1k = 0.00100, output_per_1k = 0.00300, source = "https://mistral.ai/pricing" }
+
+[providers.lmstudio]
+"__default__" = { input_per_1k = 0.0, output_per_1k = 0.0, source = "local" }
+
+[providers.openrouter]
+"__default__" = { input_per_1k = 0.000001, output_per_1k = 0.000001, source = "https://openrouter.ai/models" }

@@ -15,7 +15,8 @@ Environment Variables:
 """
 
 import os
-from fastapi import FastAPI, HTTPException, Header, Depends
+import time as _time
+from fastapi import FastAPI, HTTPException, Header, Depends, Request
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 import structlog
@@ -157,6 +158,49 @@ async def health_check():
         "version": "0.1.0-dev",
         "session_count": session_manager.get_session_count(),
     }
+
+
+@app.get("/metrics", summary="Prometheus metrics endpoint")
+async def metrics_endpoint(request: Request):
+    """
+    Prometheus /metrics endpoint.
+    
+    Returns metrics in Prometheus text format for scraping.
+    Requires PrometheusMetricsAdapter to be initialized and enabled.
+    Rate-limited: max 1 scrape per 15 seconds per IP.
+    """
+    from fastapi.responses import Response
+    
+    # Try to get Prometheus adapter from registry
+    try:
+        from src.adapters.registry import AdapterRegistry
+        registry = AdapterRegistry()
+        adapter = registry.get("prometheus_metrics")
+        
+        # Simple rate limiting by IP
+        client_ip = request.client.host if request and request.client else "unknown"
+        now = _time.time()
+        if hasattr(adapter, '_scrape_timestamps'):
+            last = adapter._scrape_timestamps.get(client_ip, 0)
+            if now - last < 15:
+                return Response(
+                    content="Rate limited: max 1 scrape per 15 seconds\n",
+                    status_code=429,
+                    media_type="text/plain",
+                )
+            adapter._scrape_timestamps[client_ip] = now
+        
+        metrics_text = adapter.get_metrics_text()
+        return Response(
+            content=metrics_text,
+            media_type="text/plain; version=0.0.4",
+        )
+    except Exception:
+        return Response(
+            content="# Prometheus metrics not available\n",
+            status_code=503,
+            media_type="text/plain",
+        )
 
 
 @app.get("/", summary="Root endpoint")

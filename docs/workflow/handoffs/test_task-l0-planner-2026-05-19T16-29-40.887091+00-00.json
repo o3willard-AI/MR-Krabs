@@ -1,0 +1,17 @@
+{
+  "timestamp": "2026-05-19T16:29:40.887091+00:00Z",
+  "task_id": "test_task",
+  "tier": "L0-Planner",
+  "attempt": 1,
+  "duration_seconds": 0.1,
+  "success": true,
+  "input_context": {
+    "test": "data"
+  },
+  "output_preview": "test result",
+  "tool_results": {
+    "tool_results": [],
+    "tools_executed": 0,
+    "all_succeeded": true
+  }
+}
