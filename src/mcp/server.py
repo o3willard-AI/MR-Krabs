@@ -17,6 +17,7 @@ Environment Variables:
 import os
 import time as _time
 from fastapi import FastAPI, HTTPException, Header, Depends, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional, Dict, Any, List
 import structlog
@@ -79,6 +80,16 @@ app = FastAPI(
         "Exposes cost tracking, budget management, and CrewAI orchestration as reusable tools."
     ),
 )
+
+# ---- Phase 3: Bearer Token Authentication ----
+from .auth import create_auth_middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+
+_auth_enabled = os.getenv("MRKRABS_ENABLE_BEARER_AUTH", "false").lower() == "true"
+if _auth_enabled:
+    middleware = create_auth_middleware(enabled=True)
+    app.add_middleware(BaseHTTPMiddleware, dispatch=middleware.dispatch)
+    log.info("Bearer token authentication enabled")
 
 # Initialize session manager with configurable TTL
 SESSION_TTL = int(os.getenv("SESSION_TTL", "3600"))
@@ -157,6 +168,15 @@ async def health_check():
         "service": "mr-krabs-mcp",
         "version": "0.1.0-dev",
         "session_count": session_manager.get_session_count(),
+    }
+
+
+@app.get("/ready", summary="Readiness check")
+async def readiness_check():
+    """Readiness probe — returns 200 when server is ready to accept traffic."""
+    return {
+        "status": "ready",
+        "service": "mr-krabs-mcp",
     }
 
 
@@ -916,11 +936,14 @@ async def export_json(request: ExportRequest):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Any, exc: Exception):
-    """Handle unexpected exceptions."""
+    """Handle unexpected exceptions. Pass through HTTPExceptions (they're expected)."""
+    # Don't intercept HTTPException — FastAPI handles those natively
+    if isinstance(exc, HTTPException):
+        raise exc
     log.error(f"Unexpected error", error=str(exc), path=request.url.path)
-    raise HTTPException(
+    return JSONResponse(
         status_code=500,
-        detail="Internal server error"
+        content={"detail": "Internal server error"},
     )
 
 

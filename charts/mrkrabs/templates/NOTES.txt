@@ -1,0 +1,19 @@
+🎯 MR-Krabs is deploying!
+
+  Watch deployment status:
+    kubectl get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+  Health check:
+    export POD_NAME=$(kubectl get pods -l app.kubernetes.io/name={{ include "mrkrabs.name" . }} -o jsonpath="{.items[0].metadata.name}")
+    kubectl port-forward $POD_NAME {{ .Values.service.port }}:{{ .Values.service.port }}
+    curl http://localhost:{{ .Values.service.port }}/health
+
+  Metrics:
+    kubectl port-forward $POD_NAME {{ .Values.service.metricsPort }}:{{ .Values.service.metricsPort }}
+    curl http://localhost:{{ .Values.service.metricsPort }}/metrics
+
+  Upgrade:
+    helm upgrade {{ .Release.Name }} mrkrabs/mrkrabs --set config.budget.dailyLimit=20.00
+
+  Rollback:
+    helm rollback {{ .Release.Name }}

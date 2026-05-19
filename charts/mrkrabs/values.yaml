@@ -1,0 +1,55 @@
+replicaCount: 2
+
+image:
+  repository: mrkrabs
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+  metricsPort: 8001
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+
+config:
+  budget:
+    dailyLimit: 10.00
+  routing:
+    strategy: smart
+  features:
+    enablePrometheusMetrics: true
+    enableLitellmRouter: false
+    enableBearerAuth: false
+    enableTracing: false
+    enableCache: false
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+securityContext:
+  runAsNonRoot: true
+  readOnlyRootFilesystem: true
+  runAsUser: 1000
+
+serviceAccount:
+  create: true
+  name: ""
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+prometheus:
+  serviceMonitor:
+    enabled: false
+    interval: 30s

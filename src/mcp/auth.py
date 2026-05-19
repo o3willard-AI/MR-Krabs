@@ -198,3 +198,103 @@ class AuthMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         response.headers["X-RateLimit-Remaining"] = str(self.rate_limiter.get_remaining(client_id))
         return response
+
+
+# ---- Phase 3: Bearer Token Authentication Middleware ----
+
+from typing import Callable
+from fastapi import Request, HTTPException
+
+class BearerAuthMiddleware:
+    """FastAPI middleware for Bearer token and API key authentication.
+    
+    Validates Authorization: Bearer <token> and X-API-Key headers.
+    Public endpoints (/, /health, /ready, /metrics, /docs) bypass auth.
+    Brute force protection: 5 failed attempts = 60s lockout per IP.
+    """
+    
+    PUBLIC_PATHS = {"/", "/health", "/ready", "/metrics", "/docs", "/openapi.json"}
+    
+    def __init__(self, app, enabled: bool = False):
+        self.app = app
+        self.enabled = enabled
+        self._valid_tokens: set = set()
+        self._valid_api_keys: set = set()
+        self._failed_attempts: dict = {}
+        self._reload_credentials()
+    
+    def _reload_credentials(self):
+        import os
+        token = os.getenv("MCP_BEARER_TOKEN", "")
+        api_key = os.getenv("MCP_API_KEY", "")
+        self._valid_tokens = {token} if token else set()
+        self._valid_api_keys = {api_key} if api_key else set()
+    
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        
+        # Bypass auth for public endpoints
+        if path in self.PUBLIC_PATHS or path.startswith("/docs") or path.startswith("/openapi"):
+            response = await call_next(request)
+            self._add_security_headers(response)
+            return response
+        
+        # If disabled, allow everything
+        if not self.enabled:
+            response = await call_next(request)
+            self._add_security_headers(response)
+            return response
+        
+        client_ip = request.client.host if request.client else "unknown"
+        
+        # Brute force check
+        import time as _time
+        if client_ip in self._failed_attempts:
+            count, lockout_until = self._failed_attempts[client_ip]
+            if lockout_until and _time.time() < lockout_until:
+                from fastapi.responses import JSONResponse
+                return JSONResponse(
+                    status_code=429,
+                    content={"detail": "Too many failed attempts. Try again later."},
+                )
+        
+        # Bearer token
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:]
+            if token in self._valid_tokens:
+                self._failed_attempts.pop(client_ip, None)
+                response = await call_next(request)
+                self._add_security_headers(response)
+                return response
+        
+        # API key
+        api_key = request.headers.get("X-API-Key", "")
+        if api_key and api_key in self._valid_api_keys:
+            self._failed_attempts.pop(client_ip, None)
+            response = await call_next(request)
+            self._add_security_headers(response)
+            return response
+        
+        # Auth failed
+        now = _time.time()
+        count, _ = self._failed_attempts.get(client_ip, (0, None))
+        count += 1
+        lockout = now + 60 if count >= 5 else None
+        self._failed_attempts[client_ip] = (count, lockout)
+        
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing authentication credentials"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    def _add_security_headers(self, response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+
+
+def create_auth_middleware(enabled: bool = False) -> BearerAuthMiddleware:
+    """Factory for Bearer token auth middleware. Import and use in server.py."""
+    return BearerAuthMiddleware(None, enabled=enabled)

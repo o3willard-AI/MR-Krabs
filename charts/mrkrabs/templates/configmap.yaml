@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mrkrabs.fullname" . }}-config
+  labels:
+    {{- include "mrkrabs.labels" . | nindent 4 }}
+data:
+  MRKRABS_BUDGET_DAILY_LIMIT: "{{ .Values.config.budget.dailyLimit }}"
+  MRKRABS_ROUTING_STRATEGY: "{{ .Values.config.routing.strategy }}"
+  MRKRABS_ENABLE_PROMETHEUS_METRICS: "{{ .Values.config.features.enablePrometheusMetrics }}"
+  MRKRABS_ENABLE_LITELLM_ROUTER: "{{ .Values.config.features.enableLitellmRouter }}"
+  MRKRABS_ENABLE_BEARER_AUTH: "{{ .Values.config.features.enableBearerAuth }}"
+  MRKRABS_ENABLE_TRACING: "{{ .Values.config.features.enableTracing }}"
+  MRKRABS_ENABLE_CACHE: "{{ .Values.config.features.enableCache }}"
