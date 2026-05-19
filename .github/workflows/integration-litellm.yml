@@ -1,0 +1,150 @@
+name: LiteLLM Integration Tests
+
+on:
+  push:
+    paths:
+      - 'src/adapters/**'
+      - 'src/metrics/**'
+      - 'tests/integration_litellm/**'
+      - '.github/workflows/integration-litellm.yml'
+  pull_request:
+    paths:
+      - 'src/adapters/**'
+      - 'src/metrics/**'
+      - 'tests/integration_litellm/**'
+      - '.github/workflows/integration-litellm.yml'
+  workflow_dispatch:  # allow manual triggering
+  schedule:
+    - cron: '0 6 * * 1'  # Monday 6 AM UTC
+
+concurrency:
+  group: integration-litellm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  existing-tests:
+    name: Existing Test Suite (Safety Gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+      - name: Run existing test suite (feature flags OFF)
+        run: |
+          python -m pytest tests/unit/ -q
+      - name: Verify no regressions
+        run: |
+          echo "Existing test suite passed — safe to proceed with integration tests."
+
+  phase0-harness:
+    name: Phase 0 — Harness Self-Tests
+    runs-on: ubuntu-latest
+    needs: [existing-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+      - name: Run Phase 0 tests (harness validation)
+        run: |
+          python -m pytest tests/integration_litellm/phase_0/ -v --cov=src/adapters --cov-fail-under=95 --cov-report=term
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-phase0
+          path: .coverage
+
+  phase1-metrics:
+    name: Phase 1 — Observability Tests
+    runs-on: ubuntu-latest
+    needs: [phase0-harness]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev,metrics]
+      - name: Run Phase 1 tests
+        run: |
+          python -m pytest tests/integration_litellm/phase_1/ -v --cov=src/metrics --cov-fail-under=85 --cov-report=term
+
+  phase2-routing:
+    name: Phase 2 — Routing Tests
+    runs-on: ubuntu-latest
+    needs: [phase0-harness]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+      - name: Run Phase 2 tests
+        run: |
+          python -m pytest tests/integration_litellm/phase_2/ -v --cov=src/adapters --cov-fail-under=90 --cov-report=term
+
+  security-scan:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    needs: [phase0-harness]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          pip install -e .[dev]
+          pip install pip-audit
+      - name: Run pip-audit
+        run: |
+          pip-audit --strict  # fail on any vulnerability
+      - name: Verify no HIGH/CRITICAL vulnerabilities
+        run: |
+          echo "Security scan passed."
+
+  schedule-dependency-check:
+    name: Weekly Dependency Audit
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pip-tools
+        run: pip install pip-tools
+      - name: Generate hashed requirements
+        run: |
+          pip-compile --generate-hashes pyproject.toml -o requirements-lock.txt
+      - name: Check for changes
+        id: check
+        run: |
+          if git diff --quiet requirements-lock.txt; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          else
+            echo "changed=true" >> $GITHUB_OUTPUT
+          fi
+      - name: Create PR if dependencies changed
+        if: steps.check.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          title: 'chore: update dependency lock file'
+          body: 'Automated dependency hash update from weekly audit.'
+          branch: 'chore/update-deps'
+          labels: 'dependencies'

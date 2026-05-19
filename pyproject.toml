@@ -88,6 +88,12 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v"
 
+markers = [
+    "external: tests requiring real API calls",
+    "slow: tests that take >10 seconds",
+    "e2e: end-to-end integration tests",
+]
+
 [tool.coverage.run]
 source = ["src"]
 omit = ["tests/*", "*__init__.py"]
