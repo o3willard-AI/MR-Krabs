@@ -13,13 +13,6 @@ from src.core.metrics import MetricsCollector  # noqa: E402
 from src.core.orchestrator import MODELS, LLMOrchestrator  # noqa: E402
 from src.core.cost import CostTracker  # noqa: E402
 
-# Import auth components for CLI commands
-try:
-    from src.mcp.auth import AuthManager, KeyManager
-    AUTH_AVAILABLE = True
-except ImportError:
-    AUTH_AVAILABLE = False
-
 try:
     from rich import box
     from rich.console import Console
@@ -143,24 +136,6 @@ def main():
     sub.add_parser("init", help="Interactive setup wizard")
     sub.add_parser("doctor", help="Check system health")
     
-    # Add auth subcommand group
-    if AUTH_AVAILABLE:
-        auth_p = sub.add_parser("auth", help="Authentication management")
-        auth_sub = auth_p.add_subparsers(dest="auth_command")
-        
-        create_token_p = auth_sub.add_parser("create-token", help="Create a new JWT token")
-        create_token_p.add_argument("--client-id", required=True, help="Client ID for the token")
-        create_token_p.add_argument("--expiry", type=int, default=1440, help="Token expiry in minutes (default: 1440)")
-        create_token_p.add_argument("--scopes", nargs="*", help="Optional scopes for the token")
-        
-        auth_sub.add_parser("rotate-keys", help="Rotate authentication keys")
-        
-        list_keys_p = auth_sub.add_parser("list-keys", help="List all API keys")
-        list_keys_p.add_argument("--show-all", action="store_true", help="Show all key details")
-        
-        revoke_key_p = auth_sub.add_parser("revoke-key", help="Revoke an API key")
-        revoke_key_p.add_argument("key", help="Key to revoke")
-    
     stats_p = sub.add_parser("stats", help="Show cost summary")
     stats_p.add_argument("--export", choices=["json", "csv", "both"],
                          help="Export cost data to file")
@@ -228,59 +203,6 @@ def main():
         result = cli.execute_task(args.task_id, args.tier, context, args.output)
         cli.print_metrics()
         sys.exit(0 if result.get("success") else 1)
-    elif args.command == "auth":
-        # Handle auth commands
-        if not AUTH_AVAILABLE:
-            print("Authentication not available - missing dependencies")
-            sys.exit(1)
-            
-        if args.auth_command == "create-token":
-            try:
-                from src.mcp.auth import AuthManager
-                auth_manager = AuthManager(secret_key="change-me")  # In real usage, this would be from env var
-                token = auth_manager.create_token(
-                    client_id=args.client_id,
-                    scopes=args.scopes
-                )
-                print(f"Created token for {args.client_id}:")
-                print(token)
-            except Exception as e:
-                print(f"Error creating token: {e}")
-                sys.exit(1)
-        elif args.auth_command == "list-keys":
-            try:
-                from src.mcp.auth import KeyManager
-                key_manager = KeyManager()
-                keys = key_manager.list_keys()
-                if keys:
-                    for key_info in keys:
-                        print(f"Key: {key_info['key']}, Label: {key_info['label']}")
-                else:
-                    print("No API keys found")
-            except Exception as e:
-                print(f"Error listing keys: {e}")
-                sys.exit(1)
-        elif args.auth_command == "revoke-key":
-            try:
-                from src.mcp.auth import KeyManager
-                key_manager = KeyManager()
-                key_manager.revoke_key(args.key)
-                print("Key revoked successfully")
-            except Exception as e:
-                print(f"Error revoking key: {e}")
-                sys.exit(1)
-        elif args.auth_command == "rotate-keys":
-            try:
-                from src.mcp.auth import AuthManager
-                auth_manager = AuthManager(secret_key="change-me")
-                # This would be implemented in a real version
-                print("Key rotation not implemented in this basic version")
-            except Exception as e:
-                print(f"Error rotating keys: {e}")
-                sys.exit(1)
-        else:
-            auth_p.print_help()
-        sys.exit(0)
     else:
         p.print_help()
         sys.exit(1)

@@ -1,1 +1,0 @@
-# Harness self-validation tests
