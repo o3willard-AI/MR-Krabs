@@ -12,14 +12,25 @@ def _pending_dir() -> Path:
 
 TIMEOUT_MINUTES = 15  # default
 
+def _to_serializable(obj):
+    """Convert dataclass or other non-JSON objects to dict/primitive."""
+    if hasattr(obj, '__dataclass_fields__'):
+        return {f: _to_serializable(getattr(obj, f)) for f in obj.__dataclass_fields__}
+    if isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_serializable(v) for v in obj]
+    return obj
+
 def write_pending_file(task_id: str, info: dict) -> Path:
     """Write {task_id}.json with current state to ~/.mrkrabs/pending/"""
     pending_dir = _pending_dir()
     pending_dir.mkdir(parents=True, exist_ok=True)
     
     file_path = pending_dir / f"{task_id}.json"
+    serializable = _to_serializable(info)
     with open(file_path, 'w') as f:
-        json.dump(info, f, indent=2)
+        json.dump(serializable, f, indent=2)
     
     return file_path
 

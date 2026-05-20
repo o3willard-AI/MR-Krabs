@@ -162,6 +162,15 @@ Return ONLY valid JSON (no markdown, no explanation):
         
         try:
             # Try to parse JSON response
+            # Guard against None or non-string responses from LLM
+            if not raw_response or not isinstance(raw_response, str):
+                return Verdict(
+                    accepted=False,
+                    score=0.0,
+                    critique=f"Judge returned empty or non-string response: {type(raw_response).__name__}",
+                    checks_passed=[],
+                    checks_failed=["judge_unavailable"]
+                )
             # First, try to extract JSON from the response if it's not directly valid JSON
             json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
             if json_match:
@@ -170,19 +179,18 @@ Return ONLY valid JSON (no markdown, no explanation):
             else:
                 # If no JSON found, treat the whole response as critique
                 data = {
-                    "accepted": False,
                     "score": 0.0,
-                    "critique": raw_response,
+                    "critique": raw_response[:500],
                     "checks_passed": [],
                     "checks_failed": ["json_parse_error"]
                 }
             
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError, ValueError):
             # If JSON parsing fails, return default verdict with raw response as critique
             return Verdict(
                 accepted=False,
                 score=0.0,
-                critique=f"Failed to parse judge response: {raw_response}",
+                critique=f"Failed to parse judge response: {str(raw_response)[:200]}",
                 checks_passed=[],
                 checks_failed=["json_parse_error"]
             )
