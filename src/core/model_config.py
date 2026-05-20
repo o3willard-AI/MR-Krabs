@@ -1,7 +1,31 @@
 #!/usr/bin/env python3
-"""Model configuration — shared MODELS dict used by orchestrator and judge."""
+"""Model configuration — shared MODELS dict used by orchestrator and judge.
+
+Best Practice: The Judge model should ALWAYS be a reasoning-specialized LLM.
+Reasoning models (Claude Opus, Sonnet, GPT-4, o1) produce more calibrated
+scores, more actionable critiques, and fewer hallucinated JSON responses
+than general-purpose or small models. Never use a small local model for
+judging — the Judge is the quality gate for the entire pipeline; its
+reliability directly determines whether good code gets accepted and bad
+code gets caught.
+
+MR-Krabs uses a dedicated Judge model entry (not an agent tier) to make
+this separation explicit in the configuration.
+"""
 
 MODELS = {
+    # ── Judge model (quality gate) ─────────────────────────────────
+    # Always a reasoning model — never a small/cheap tier agent.
+    "Judge": {
+        "provider": "openrouter",
+        "model": "anthropic/claude-sonnet-4.6",
+        "env_var": "OPENROUTER_API_KEY",
+        "base_url": "https://openrouter.ai/api/v1",
+        "temperature": 0.1,
+        "tools": [],
+        "role": "judge",
+    },
+    # ── Agent tiers ────────────────────────────────────────────────
     "L0-Planner": {
         "provider": "openrouter",
         "model": "qwen/qwen3.5-397b-a17b",

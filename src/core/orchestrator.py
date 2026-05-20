@@ -506,24 +506,21 @@ class LLMOrchestrator:
 
         return response.json()["choices"][0]["message"]["content"]
 
-    def _load_prompt_template(self, tier: str) -> str:
-        """Load prompt template for tier."""
-        template_map = {
-            "L0-Planner": "01-planner.md",
-            "L0-Coder": "02-l0-coder.md",
-            "L0-Reviewer": "03-reviewer.md",
-            "L1-Coder": "04-l1-coder.md",
-            "L2-Coder": "05-l2-coder.md",
-            "L3-Coder": "05-l2-coder.md",
-            "L3-Architect": "06-l3-architect.md",
-        }
-        template_file = template_map.get(tier)
-        if not template_file:
-            raise ValueError(f"No template mapped for tier: {tier}")
-        template_path = self.workflow_dir / "templates" / template_file
-        if not template_path.exists():
-            raise FileNotFoundError(f"Template not found: {template_path}")
-        return template_path.read_text()
+    def _get_agent_system_prompt(self) -> str:
+        """Load the agent system prompt template for coding tasks.
+        
+        Falls back to a concise inline prompt if the template file is missing.
+        """
+        template_path = self.workflow_dir / "templates" / "agent-system-prompt.md"
+        if template_path.exists():
+            return template_path.read_text()
+        # Fallback: minimal but functional prompt
+        return (
+            "You are an expert software developer.\n"
+            "Use file_read(\"path\") and file_write(\"path\", \"\"\"content\"\"\") tools.\n"
+            "Read before writing, match existing conventions, write complete code.\n"
+            "If ambiguous, ask. Handle edge cases. Verify your changes work."
+        )
 
     def _build_system_prompt(self, tier: str, template: str) -> str:
         """Extract system prompt from template."""
@@ -657,7 +654,7 @@ class LLMOrchestrator:
         context: dict[str, Any],
         tiers: list[str] | None = None,
         max_retries_per_tier: int = 3,
-        judge_model: str = "L2-Coder",
+        judge_model: str = "Judge",
         timeout_seconds: float = 300,
     ) -> dict[str, Any]:
         """Execute a task using Judge-based retry/escalation logic.
@@ -676,6 +673,9 @@ class LLMOrchestrator:
             retries_per_tier, verdict, cost_summary, escalation_path,
             duration_seconds, tool_results
         """
+        # Load the agent system prompt once (used across all tiers and fail-now)
+        agent_system_prompt = self._get_agent_system_prompt()
+
         # Check for fail-now signal
         fail_now_tier = get_fail_now()
         if fail_now_tier:
@@ -691,7 +691,7 @@ class LLMOrchestrator:
                 tier_config = MODELS.get(fail_now_tier, {})
                 # One-shot call — no retry, no judge
                 result = self.call_llm_with_retry(
-                    fail_now_tier, "System prompt", str(context.get("task_spec", task_id)),
+                    fail_now_tier, agent_system_prompt, str(context.get("task_spec", task_id)),
                     temperature=tier_config.get("temperature", 0.7),
                     timeout_seconds=timeout_seconds,
                 )
@@ -765,7 +765,7 @@ class LLMOrchestrator:
                     )
 
                 result = self.call_llm_with_retry(
-                    tier, "System prompt", str(user_prompt),
+                    tier, agent_system_prompt, str(user_prompt),
                     temperature=tier_config.get("temperature", 0.7),
                     timeout_seconds=timeout_seconds,
                 )

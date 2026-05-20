@@ -86,7 +86,7 @@ class TestJudgeEscalationE2E:
 
         responses = {
             "qwen3-coder-30b": (l0_output, 200),      # L0-Coder call
-            "minimax/minimax-m2.7": (judge_json, 200), # Judge call
+            "anthropic/claude-sonnet-4.6": (judge_json, 200), # Judge call
         }
 
         with patch("requests.post", side_effect=_mock_post_for_models(responses)):
@@ -120,7 +120,7 @@ class TestJudgeEscalationE2E:
                 ("def foo(): pass", 200),
                 ("def foo(x):\n    if x < 0: return 0\n    return x * 2", 200),
             ],
-            "minimax/minimax-m2.7": [  # side_effect for judge calls
+            "anthropic/claude-sonnet-4.6": [  # side_effect for judge calls
                 (reject_json, 200),
                 (accept_json, 200),
             ],
@@ -172,7 +172,7 @@ class TestJudgeEscalationE2E:
         # L0 gets called 3 times (all rejected), L1 once (accepted)
         # Judge gets called 4 times: 3 rejects + 1 accept
         judge_seqs = {
-            "minimax/minimax-m2.7": [
+            "anthropic/claude-sonnet-4.6": [
                 (reject_json, 200), (reject_json, 200), (reject_json, 200),
                 (accept_json, 200),
             ],
@@ -261,7 +261,7 @@ class TestJudgeEscalationE2E:
         responses = {
             "qwen3-coder-30b": ("error", 500),           # L0 fails
             "x-ai/grok-4.3": ("L1 output", 200),         # L1 succeeds
-            "minimax/minimax-m2.7": (accept_json, 200),   # Judge (called for L1)
+            "anthropic/claude-sonnet-4.6": (accept_json, 200),   # Judge (called for L1)
         }
 
         with patch("requests.post", side_effect=_mock_post_for_models(responses)):
@@ -285,7 +285,7 @@ class TestJudgeEscalationE2E:
         def side_effect(url, **kwargs):
             payload = kwargs.get("json", {})
             model = payload.get("model", "")
-            content = malformed if "minimax" in model else "L0 output"
+            content = malformed if "claude" in model else "L0 output"
             mock = MagicMock()
             mock.status_code = 200
             mock.json.return_value = {"choices": [{"message": {"content": content}}]}
@@ -314,7 +314,7 @@ class TestJudgeEscalationE2E:
 
         responses = {
             "qwen3-coder-30b": ("output", 200),
-            "minimax/minimax-m2.7": (accept_json, 200),
+            "anthropic/claude-sonnet-4.6": (accept_json, 200),
         }
 
         with patch("requests.post", side_effect=_mock_post_for_models(responses)):
@@ -348,7 +348,7 @@ class TestJudgeEscalationE2E:
                     if msg.get("role") == "user":
                         captured_prompts.append(msg["content"])
                 content = "L0 output"
-            elif "minimax" in model:
+            elif "claude" in model:
                 content = reject_json  # Judge returns rejection
             else:
                 content = "default"
@@ -384,7 +384,7 @@ class TestJudgeEscalationE2E:
         def side_effect(url, **kwargs):
             payload = kwargs.get("json", {})
             model = payload.get("model", "")
-            content = reject_json if "minimax" in model else f"{model} output"
+            content = reject_json if "claude" in model else f"{model} output"
             mock = MagicMock()
             mock.status_code = 200
             mock.json.return_value = {"choices": [{"message": {"content": content}}]}
@@ -419,7 +419,7 @@ class TestJudgeEscalationE2E:
 
         responses = {
             "x-ai/grok-4.3": ("L1 output", 200),
-            "minimax/minimax-m2.7": (accept_json, 200),
+            "anthropic/claude-sonnet-4.6": (accept_json, 200),
         }
 
         with patch("requests.post", side_effect=_mock_post_for_models(responses)):
@@ -446,7 +446,7 @@ class TestJudgeEscalationE2E:
         try:
             responses = {
                 "x-ai/grok-4.3": ("L1 output", 200),
-                "minimax/minimax-m2.7": (accept_json, 200),
+                "anthropic/claude-sonnet-4.6": (accept_json, 200),
             }
 
             with patch("requests.post", side_effect=_mock_post_for_models(responses)):

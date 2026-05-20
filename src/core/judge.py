@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Judge - LLM-powered quality evaluator for code/text output."""
+"""Judge - LLM-powered quality evaluator for code/text output.
+
+Best Practice: The Judge model should ALWAYS be a reasoning-specialized LLM.
+See model_config.py docstring for rationale. The Judge is the quality gate
+for the entire escalation pipeline — its reliability is the ceiling on the
+system's ability to distinguish good code from bad.
+
+By default, MR-Krabs uses a dedicated "Judge" model entry (not an agent tier),
+currently anthropic/claude-sonnet-4.6, to keep the quality gate independent
+from the worker agents.
+"""
 
 import json
 import os
@@ -19,15 +29,20 @@ class Verdict:
     
     accepted: bool
     score: float          # 0.0 - 1.0
-    critique: str         # specific, actionable feedback  
+    critique: str         # specific, actionable feedback with coaching  
     checks_passed: List[str]
     checks_failed: List[str]
 
 
 class Judge:
-    """LLM-powered quality evaluator for code/text output."""
+    """LLM-powered quality evaluator for code/text output.
     
-    def __init__(self, model: str = "L2-Coder", criteria: Optional[List[str]] = None, 
+    The Judge evaluates agent outputs and produces Verdicts with
+    scored critiques. When output is rejected, the critique is fed
+    back to the agent as coaching for the next retry attempt.
+    """
+    
+    def __init__(self, model: str = "Judge", criteria: Optional[List[str]] = None, 
                  acceptance_threshold: float = 0.7):
         """Initialize the Judge with specified model and criteria.
         
@@ -86,32 +101,72 @@ class Judge:
         if self._prompt_template is not None:
             prompt_template = self._prompt_template
         else:
-            prompt_template = '''You are a code quality judge. Evaluate this output against the task.
+            prompt_template = '''You are an impartial code quality judge. Your job is to evaluate 
+whether an AI assistant's output correctly solves the given task and — if it 
+does not — provide specific, actionable coaching to help the assistant fix it.
 
-TASK: {task}
-OUTPUT: {output}
+## Evaluation Process
 
-Check:
+1. First, read the task and identify what a correct solution requires.
+2. Then, examine the output and note exactly what it does right and wrong.
+3. Assign a score based on the rubric below.
+
+## Rubric (score 0.0-1.0)
+
+- 0.0-0.2: Completely wrong, unrelated to task, crashes, or is empty
+- 0.3-0.5: Partially correct but has major bugs, missing requirements, or won't compile
+- 0.6-0.8: Mostly correct with minor issues (missed edge cases, style violations)
+- 0.9-1.0: Fully correct, handles edge cases, production-quality
+
+IMPORTANT: Do NOT let the length of the output influence your score.
+A short, correct answer beats a long, incorrect one. Be strict: if the
+code would not run or would produce wrong output, score it below 0.3.
+
+## Evaluation Criteria
+
 {criteria_list}
 
-Return ONLY valid JSON (no markdown, no explanation):
-{"score": 0.0-1.0, "critique": "specific feedback", 
- "checks_passed": ["check1"], "checks_failed": ["check2"]}
+## Coaching Reply (CRITICAL)
+
+When the output is rejected (score < 0.7), your critique must be a coaching
+reply that gives the assistant the BEST possible chance of succeeding on the
+next attempt. A coaching reply must include:
+
+1. **What was done well** — reinforce correct parts so they are kept
+2. **What specific thing is wrong** — name the file, function, or line
+3. **Why it's wrong** — what requirement does it violate?
+4. **How to fix it** — give a concrete, specific fix (show corrected code
+   or the exact change needed). Do NOT say "fix the bug" — say "change
+   line X from Y to Z because..." or "add error handling for case W like this..."
+5. **What to verify after fixing** — how the assistant should check the fix works
+
+Be direct and specific. "The sort function doesn't handle None inputs — 
+add `if lst is None: return []` at the top of the function" is a coaching
+reply. "Missing edge cases" is not.
+
+## Output Format
+
+Return ONLY valid JSON (no markdown, no explanation outside the JSON):
+{
+  "score": 0.0,
+  "critique": "COACHING REPLY: follow the 5-point structure above",
+  "checks_passed": ["check_name"],
+  "checks_failed": ["check_name"]
+}
 '''
         
         # Format the criteria list for the prompt
         criteria_list = "\n".join([f"{i+1}. {c}" for i, c in enumerate(criteria)])
         
-        # Build the final prompt using string replacement to avoid conflicts with JSON braces
+        # Build the final prompt
         if self._prompt_template is not None:
-            prompt = self._prompt_template.format(task=task, output=output, criteria_list=criteria_list)
+            # Custom template — uses Python .format(), so {{literal}} for braces
+            prompt = self._prompt_template.format(
+                task=task, output=output, criteria_list=criteria_list
+            )
         else:
-            # For the default template, we need to avoid Python format conflicts
-            # Replace placeholders one by one
-            prompt = prompt_template
-            prompt = prompt.replace('{task}', task)
-            prompt = prompt.replace('{output}', output)
-            prompt = prompt.replace('{criteria_list}', criteria_list)
+            # Default template — uses .replace() so only {criteria_list} is replaced
+            prompt = prompt_template.replace('{criteria_list}', criteria_list)
         
         # Prepare the messages for LLM call
         messages = [

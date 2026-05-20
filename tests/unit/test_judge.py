@@ -57,7 +57,7 @@ class TestJudge(unittest.TestCase):
         """Test Judge initialization with default criteria."""
         judge = Judge()
         
-        self.assertEqual(judge.model, "L2-Coder")
+        self.assertEqual(judge.model, "Judge")
         self.assertEqual(judge.criteria, ["correctness", "completeness", "style", "safety"])
         self.assertEqual(judge.acceptance_threshold, 0.7)
     
@@ -65,9 +65,9 @@ class TestJudge(unittest.TestCase):
     def test_judge_init_custom_criteria(self):
         """Test Judge initialization with custom criteria."""
         custom_criteria = ["accuracy", "efficiency", "readability"]
-        judge = Judge(model="L2-Coder", criteria=custom_criteria, acceptance_threshold=0.8)
+        judge = Judge(model="Judge", criteria=custom_criteria, acceptance_threshold=0.8)
         
-        self.assertEqual(judge.model, "L2-Coder")
+        self.assertEqual(judge.model, "Judge")
         self.assertEqual(judge.criteria, custom_criteria)
         self.assertEqual(judge.acceptance_threshold, 0.8)
     
