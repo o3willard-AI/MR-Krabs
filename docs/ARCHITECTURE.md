@@ -1,178 +1,264 @@
 # MR-Krabs v0.2.0 — Judge-Based Escalation Architecture
 
-**Status:** Design sketch — not yet implemented
-**Replaces:** Current hardcoded L0→L1→L2→L3 budget-driven loop in `_ask_with_escalation()`
+**Status:** Implemented | **Tests:** 884 passing | **Last updated:** 2026-05-20
 
-## Problem
+## Overview
 
-Current escalation is prescriptive and budget-obsessed:
-- Only escalates on HTTP failure (connection refused, 4xx, 5xx) — never on *quality*
-- Budget acts as a kill switch, not a tracking tool
-- No human-in-the-loop when costs rise
-- No way to say "screw the budget, use the best model and finish this"
+MR-Krabs is a cost-optimized multi-tier AI orchestrator. It runs coding tasks through
+a quality-gated escalation pipeline: start with a free local model, escalate to
+progressively more capable cloud models only when quality demands it, and ultimately
+return control to the user's own agent if all tiers are exhausted.
 
-## New Model
+The system replaces budget-driven escalation with **judge-driven quality gates**.
+Cost is tracked but never blocks execution — it's an observer, not a gatekeeper.
+
+## Architecture Diagram
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                      ask(prompt)                         │
-│                          │                               │
-│  ┌───────────────────────▼────────────────────────────┐  │
-│  │              for tier in [L0, L1, L2, L3]:         │  │
-│  │                 │                                  │  │
-│  │    ┌────────────▼────────────┐                     │  │
-│  │    │  for retry in 1..N:    │  ← configurable     │  │
-│  │    │    output = tier.call( │    (default 3)       │  │
-│  │    │      prompt, feedback) │                     │  │
-│  │    │    verdict = JUDGE(    │  ← L2 by default     │  │
-│  │    │      task, output)     │                     │  │
-│  │    │    if verdict.accepted │                     │  │
-│  │    │      → return SUCCESS  │                     │  │
-│  │    │    feedback = verdict. │                     │  │
-│  │    │      critique          │                     │  │
-│  │    └────────────────────────┘                     │  │
-│  │                                                    │  │
-│  │    # All retries exhausted — failure state          │  │
-│  │    action = tier_config.on_failure                  │  │
-│  │    if action == LOG_ONLY:                           │  │
-│  │      log(spend, failure)  → continue to next tier   │  │
-│  │    elif action == NOTIFY_AND_ESCALATE:              │  │
-│  │      notify(spend, failure, next_tier)              │  │
-│  │      → continue to next tier                        │  │
-│  │    elif action == NOTIFY_AND_WAIT:                   │  │
-│  │      notify(spend, failure, next_tier)              │  │
-│  │      WAIT for human confirmation                     │  │
-│  │      if not confirmed → return ABORTED              │  │
-│  └────────────────────────────────────────────────────┘  │
-│                                                          │
-│  [FAIL NOW SIGNAL] — at any point, human or agent        │
-│  can trigger: skip to specified tier, ignore budget      │
-└──────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        execute_with_judge(task, context)            │
+│                                                                     │
+│  ┌───────────────────────────────────────────────────────────────┐  │
+│  │                  Tier Loop: L0 → L1 → L2 → Principal         │  │
+│  │                                                               │  │
+│  │   ┌─ Circuit Breaker gate ─┐                                  │  │
+│  │   └─ FailUp check ─────────┘                                  │  │
+│  │                                                               │  │
+│  │   ┌─────── Retry Loop (per tier) ────────────────────────┐    │  │
+│  │   │                                                       │    │  │
+│  │   │  LLM Call ──→ Tool Execution ──→ Judge Evaluation     │    │  │
+│  │   │       ↑                              │                │    │  │
+│  │   │       └── Feedback (coaching reply) ─┘ (if rejected)  │    │  │
+│  │   │                                                       │    │  │
+│  │   └─── Accepted → return SUCCESS ─────────────────────────┘    │  │
+│  │                                                               │  │
+│  │   Retries exhausted → FailureAction → escalate to next tier   │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+│                                                                     │
+│  Principal Agent reached → return escalation_context to caller      │
+│                                                                     │
+│  [FailNow] — skip to specified tier, one shot, no judge             │
+│  [FailUp]  — abort current tier, bump up one level                  │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-## Components
+## Tier Hierarchy
 
-### 1. Judge (`judge.py`)
+| Tier | Model | Provider | Cost | Role |
+|------|-------|----------|------|------|
+| L0-Coder | qwen3-coder-30b | LM Studio (local) | Free | First attempt |
+| L1-Coder | grok-4.3 | OpenRouter | ~$0.008/1K tok | First escalation |
+| L2-Coder | minimax-m2.7 | OpenRouter | ~$0.0008/1K tok | Second escalation |
+| Principal | *user's own agent* | — | User's subscription | Final fallback |
 
-LLM-powered quality evaluator. Default: L2 model (claude-sonnet).
+**L3 is optional.** Users who want a dedicated cloud tier between L2 and Principal can
+add L3-Coder (claude-sonnet-4.6) to their tiers list:
+
+```python
+# Default (L2 → Principal):
+tiers = ["L0-Coder", "L1-Coder", "L2-Coder", "Principal"]
+
+# With optional L3 (L2 → L3 → Principal):
+tiers = ["L0-Coder", "L1-Coder", "L2-Coder", "L3-Coder", "Principal"]
+```
+
+### Principal Agent
+
+The Principal Agent is the user's own agent — Hermes, Claude Code, Gemini CLI,
+opencode, or any CLI coding agent. MR-Krabs cannot see or manage the Principal
+Agent's LLM. When escalation reaches Principal, the orchestrator returns a
+structured result instead of making an API call:
+
+```python
+{
+    "success": False,
+    "escalated_to_principal": True,
+    "tier_used": "Principal",
+    "escalation_context": {
+        "task": "Write a bloom filter...",
+        "tiers_attempted": ["L0-Coder", "L1-Coder", "L2-Coder"],
+        "retries_per_tier": {"L0-Coder": 3, "L1-Coder": 2, "L2-Coder": 0},
+        "last_feedback": "The sort function doesn't handle None inputs..."
+    },
+    "message": "Task escalated to Principal Agent. MR-Krabs attempted 3 tier(s)..."
+}
+```
+
+This design ensures:
+- The user's subscription credits get used as the final safety net
+- The Principal Agent has full conversation context for better decisions
+- No cost to MR-Krabs for the highest-tier call
+
+## Judge System
+
+The Judge is the quality gate for the entire pipeline. It evaluates agent outputs
+and produces scored verdicts with coaching feedback.
+
+**Key design decisions (research-backed):**
+
+| Decision | Rationale | Source |
+|----------|-----------|--------|
+| Judge is a dedicated model, not a tier agent | Reliability ceiling — judge quality determines system quality | — |
+| Judge always uses a reasoning model (Claude Sonnet) | Reasoning models produce more calibrated scores and fewer hallucinations | LMSYS MT-Bench |
+| Judge prompt uses anchored rubric (0.0-0.2 crash → 0.9-1.0 perfect) | Eliminates score drift across calls | G-Eval |
+| Judge explains before scoring (impartial judge framing) | Forces reasoning, reduces pattern-matching | LMSYS |
+| Judge uses verbosity bias warning | Prevents longer-but-wrong outputs from scoring higher | LMSYS |
+| Judge produces coaching replies on rejection | Gives the retry agent the best possible chance to fix | — |
+
+### Verdict Structure
 
 ```python
 @dataclass
 class Verdict:
-    accepted: bool
-    score: float          # 0.0 - 1.0
-    critique: str         # specific, actionable feedback
+    accepted: bool          # score >= acceptance_threshold (default 0.7)
+    score: float            # 0.0 - 1.0
+    critique: str           # coaching reply with 5-point structure
     checks_passed: list[str]
     checks_failed: list[str]
-
-class Judge:
-    def __init__(self, model: str = "L2-Coder", 
-                 criteria: list[str] = None):
-        """Default criteria: correctness, completeness, style, safety."""
-    
-    def evaluate(self, task: str, output: str) -> Verdict:
-        """Ask the judge LLM: is this output good enough?"""
 ```
 
-Judge prompt template (sent to L2 model):
+### Coaching Reply (5-Point Structure)
+
+When the Judge rejects output (score < 0.7), the critique follows a mandatory
+5-point coaching structure designed to maximize the agent's chance of success on
+the next retry:
+
+1. **What was done well** — reinforce correct parts so they are kept
+2. **What specific thing is wrong** — name the file, function, or line
+3. **Why it's wrong** — what requirement does it violate?
+4. **How to fix it** — concrete code change, e.g., "change line X from Y to Z"
+5. **What to verify after fixing** — how to check the fix works
+
+Example coaching reply: *"The sort function doesn't handle None inputs — add
+`if lst is None: return []` at the top of the function and verify with
+`test_sort_none_input()`."*
+
+See [JUDGE.md](./JUDGE.md) for the full prompt template, model selection
+rationale, and criteria configuration.
+
+## Agent System Prompt
+
+Each coding agent (all tiers) receives a system prompt based on SotA patterns
+from Aider, SWE-agent, and CodeAct:
+
+- **Role:** Expert software developer
+- **Tools:** `file_read()` and `file_write()` with format examples
+- **Rules:** Read before writing, match conventions, write complete code,
+  flag ambiguous tasks, handle edge cases, verify changes
+- **Anti-hallucination:** "If the task is ambiguous, ask — do not guess"
+
+Template: `docs/workflow/templates/agent-system-prompt.md`
+
+## Escalation Pipeline
+
+The core method is `LLMOrchestrator.execute_with_judge()`:
+
 ```
-You are a code quality judge. Evaluate this output against the task.
+for tier in tiers:
+    → Circuit breaker gate (skip blocked tiers)
+    → FailUp check (abort tier and bump up if active)
+    → Retry loop (max_retries_per_tier attempts):
+        → LLM call with agent system prompt + feedback from prior judge
+        → Tool execution (parse file_read/file_write from output)
+        → Judge.evaluate(task, output) → Verdict
+        → Cost tracking (observer only, never blocks)
+        → If accepted → return SUCCESS
+        → If rejected → save critique as feedback for next retry
+    → Retries exhausted → FailureAction → escalate to next tier
 
-TASK: {task}
-OUTPUT: {output}
-
-Check:
-1. Does the code solve the stated problem?
-2. Is it complete (no TODOs, no missing functions)?
-3. Does it follow Python best practices?
-4. Are there bugs or edge case issues?
-5. Is it production-ready?
-
-Return JSON: {"accepted": bool, "score": 0.0-1.0, "critique": "..."}
+→ All tiers exhausted → total failure
 ```
 
-### 2. Failure Actions (`failure_action.py`)
+### Default Tiers
 
 ```python
-class FailureAction(Enum):
-    LOG_ONLY = "log_only"
-    NOTIFY_AND_ESCALATE = "notify_and_escalate"
-    NOTIFY_AND_WAIT = "notify_and_wait"
+["L0-Coder", "L1-Coder", "L2-Coder", "Principal"]
+```
 
-# Per-tier defaults:
-TIER_FAILURE_ACTIONS = {
-    "L0-Coder": FailureAction.LOG_ONLY,        # L0 is free, just log
-    "L1-Coder": FailureAction.NOTIFY_AND_ESCALATE,  # notify, keep going
-    "L2-Coder": FailureAction.NOTIFY_AND_WAIT,      # getting expensive, ask human
-    "L3-Coder": FailureAction.NOTIFY_AND_WAIT,      # most expensive, always ask
+### Retry Per Tier
+
+Default: 3 retries per tier. Configurable via `max_retries_per_tier`.
+
+### Feedback Injection
+
+On retry N+1, the Judge's critique is injected into the user prompt:
+```
+## Previous Attempt Feedback
+The prior output was rejected by the quality judge.
+Critique: {coaching reply}
+Please fix these issues and try again.
+```
+
+## Failure Actions
+
+Per-tier configurable actions when all retries are exhausted:
+
+| Action | Behavior | Default Tiers |
+|--------|----------|---------------|
+| `LOG_ONLY` | Log the failure, continue to next tier | L0 |
+| `NOTIFY_AND_ESCALATE` | Send notification, continue to next tier | L1 |
+| `NOTIFY_AND_WAIT` | Send notification, wait for human confirmation | L2 |
+
+Human confirmation for `NOTIFY_AND_WAIT`:
+- Writes `~/.mrkrabs/pending/<task_id>.json`
+- Polls for `{confirmed: true}` or `{confirmed: false, reason: "..."}`
+- 15-minute timeout → auto-abort
+
+## FailNow / FailUp Signals
+
+Emergency controls to bypass the normal escalation flow:
+
+| Signal | Effect | Trigger |
+|--------|--------|---------|
+| `FailNow` | Skip directly to specified tier, one shot, no judge | `set_fail_now("L1-Coder")` or `MRKRABS_FAIL_NOW` env var |
+| `FailUp` | Abort current tier, bump up one level | `set_fail_up()` or `MRKRABS_FAIL_UP` env var |
+
+Both auto-clear after use. The fail-now path also checks a mesh signal file for
+remote triggering.
+
+## Cost Tracking
+
+`CostTracker` is an **observer only** — it tracks spend per task, per tier, per
+session, but never blocks execution. Budget is communicated in notifications and
+available for reporting, but cost doesn't gate the pipeline.
+
+```
+CostTracker.record() — records spend, never raises
+CostTracker.get_summary() — returns {daily_total, budget_remaining, ...}
+```
+
+## Model Configuration
+
+All models are defined in `src/core/model_config.py`:
+
+```python
+MODELS = {
+    "Judge": {  # dedicated — never a tier agent
+        "model": "anthropic/claude-sonnet-4.6",
+        "temperature": 0.1,  # low temp for consistent evaluations
+        "role": "judge",
+    },
+    "L0-Coder": {"provider": "lmstudio", "model": "qwen/qwen3-coder-30b", ...},
+    "L1-Coder": {"provider": "openrouter", "model": "x-ai/grok-4.3", ...},
+    "L2-Coder": {"provider": "openrouter", "model": "minimax/minimax-m2.7", ...},
+    "Principal": {"role": "principal"},  # no provider — returns to caller
+    # L3-Coder and L3-Architect available as optional cloud tiers
 }
 ```
 
-### 3. Notifier (`notify.py`)
+## Key Files
 
-Pluggable notification backends. Default: mesh message to primary agent.
-
-```python
-class Notifier(ABC):
-    @abstractmethod
-    def send(self, message: str, urgency: str) -> bool: ...
-
-class MeshNotifier(Notifier):
-    """Send via agent mesh to primary agent."""
-    
-class TelegramNotifier(Notifier):
-    """Send via Telegram to human."""
-    
-class NoopNotifier(Notifier):
-    """Silent — for testing."""
-```
-
-### 4. Fail-Now Signal
-
-A mechanism for human or agent to preempt the escalation loop:
-
-```python
-# Set before calling ask():
-set_fail_now(tier="L3-Coder")  
-
-# Or via environment:
-export MRKRABS_FAIL_NOW=L2-Coder
-
-# Or via agent mesh message:
-mesh.send("mrkrabs://fail-now", {"tier": "L3-Coder"})
-```
-
-When `fail_now` is set, `ask()` skips directly to the specified tier, calls once (no retry loop), and returns whatever it gets. Cost is logged but not checked.
-
-### 5. Cost Tracking (unchanged role)
-
-`CostTracker` remains, but its role shifts from *controller* to *observer*:
-- Tracks spend per task, per tier, per session
-- Communicates spend in notifications
-- Available for analysis and reporting
-- Does NOT block execution except at NOTIFY_AND_WAIT boundaries
-
-## Implementation Plan
-
-| Phase | What | Effort |
-|-------|------|--------|
-| 1 | `Judge` class + verdict prompt | 1 day |
-| 2 | Refactor `_ask_with_escalation()` to use Judge + retry loop | 1 day |
-| 3 | `FailureAction` enum + per-tier config | 0.5 day |
-| 4 | `Notifier` base + MeshNotifier implementation | 1 day |
-| 5 | `FailNow` signal (env var + function) | 0.5 day |
-| 6 | Integration tests + live tier escalation test | 1 day |
-| | **Total** | **5 days** |
-
-## What Gets Deleted (already done)
-
-- Hardcoded budget reservations in `_ask_with_escalation()`
-- `max_cost` parameter on `ask()` (replaced by failure actions)
-- Budget-driven abort (replaced by human-in-the-loop at expensive tiers)
-
-## What Stays
-
-- `CostTracker` — for tracking and communication
-- `MODELS` dict + tier config — still the source of truth for providers
-- Direct HTTP calls in `call_llm()` — no unnecessary adapter layers
-- `circuit_breaker.py`, `rate_limit.py` — useful, partially wired
+| File | Purpose |
+|------|---------|
+| `src/core/orchestrator.py` | `execute_with_judge()` — main escalation pipeline |
+| `src/core/judge.py` | Judge class, verdict evaluation, coaching prompt |
+| `src/core/judge_criteria.py` | Default criteria + task type detection |
+| `src/core/model_config.py` | MODELS dict — all tiers + Judge + Principal |
+| `src/core/failure_action.py` | FailureAction enum (LOG_ONLY/NOTIFY_AND_ESCALATE/NOTIFY_AND_WAIT) |
+| `src/core/fail_now.py` | FailNow/FailUp signals (env var + function + mesh) |
+| `src/core/notify.py` | Pluggable notifiers (Mesh, Telegram, fallback) |
+| `src/core/human_gate.py` | Pending file + human confirmation for NOTIFY_AND_WAIT |
+| `src/core/cost.py` | CostTracker — observer-only spend tracking |
+| `src/core/circuit_breaker.py` | Per-model circuit breaker |
+| `docs/workflow/templates/agent-system-prompt.md` | Agent system prompt template |
+| `docs/JUDGE.md` | Judge best practices, prompt design, coaching reply spec |
