@@ -684,7 +684,7 @@ class LLMOrchestrator:
             # Validate the tier exists
             if fail_now_tier not in MODELS:
                 # Fall through to closest available tier
-                available = [t for t in tiers or ["L0-Coder", "L1-Coder", "L2-Coder", "L3-Coder"] if t in MODELS]
+                available = [t for t in tiers or ["L0-Coder", "L1-Coder", "L2-Coder", "Principal"] if t in MODELS]
                 fail_now_tier = available[-1] if available else None
             
             if fail_now_tier:
@@ -714,7 +714,7 @@ class LLMOrchestrator:
             
             clear_fail_now()
         
-        tiers = tiers or ["L0-Coder", "L1-Coder", "L2-Coder", "L3-Coder"]
+        tiers = tiers or ["L0-Coder", "L1-Coder", "L2-Coder", "Principal"]
 
         start_time = time.monotonic()
         attempts_total = 0
@@ -726,8 +726,44 @@ class LLMOrchestrator:
             retries_per_tier[tier] = 0
             fail_up_aborted = False  # track if fail_up triggered this tier
 
-            # --- Circuit breaker gate ---
+            # Look up tier config (used by Principal check, circuit breaker, and retry loop)
             tier_config = MODELS.get(tier, {})
+
+            # --- Principal Agent check ---
+            # Principal has no provider/model — it's the user's own agent.
+            # When escalation reaches Principal, return full context so the
+            # calling agent (Hermes, Claude Code, etc.) can take over.
+            if tier_config.get("role") == "principal":
+                principal_context = {
+                    "task": context.get("task_spec", task_id),
+                    "tiers_attempted": list(escalation_path),
+                    "retries_per_tier": dict(retries_per_tier),
+                    "last_feedback": feedback,
+                }
+                print(f"[PRINCIPAL] Escalating to Principal Agent — "
+                      f"MR-Krabs tiers exhausted: {escalation_path}")
+                return {
+                    "task_id": task_id,
+                    "success": False,
+                    "escalated_to_principal": True,
+                    "tier_used": "Principal",
+                    "output": None,
+                    "escalation_context": principal_context,
+                    "attempts_total": attempts_total,
+                    "retries_per_tier": retries_per_tier,
+                    "cost_summary": self.cost_tracker.get_summary(),
+                    "escalation_path": escalation_path + ["Principal"],
+                    "duration_seconds": time.monotonic() - start_time,
+                    "tool_results": None,
+                    "message": (
+                        "Task escalated to Principal Agent. MR-Krabs attempted "
+                        f"{len(escalation_path)} tier(s) with {attempts_total} total "
+                        "attempts and could not produce accepted output. See "
+                        "escalation_context for full details."
+                    ),
+                }
+
+            # --- Circuit breaker gate ---
             provider = tier_config.get("provider", "")
             model_name = tier_config.get("model", "")
             if provider and model_name:

@@ -150,6 +150,16 @@ class TierManager:
             cost_per_1k_tokens={"prompt": Decimal("0.003"), "completion": Decimal("0.015")},
             supports_tools=True
         ),
+        Tier(
+            level=TierLevel.L3,
+            name="Principal",
+            model="<principal-agent>",  # not an LLM — returns to caller
+            base_url="<principal-agent>",
+            api_key_env=None,
+            temperature=0.0,
+            cost_per_1k_tokens={"prompt": Decimal("0.0"), "completion": Decimal("0.0")},
+            supports_tools=False
+        ),
     ]
     
     # Simplified tier name aliases (for easier usage)

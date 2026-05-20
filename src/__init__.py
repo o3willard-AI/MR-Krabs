@@ -54,6 +54,9 @@ def _get_available_tiers() -> list[str]:
     """Return list of tiers that have required environment variables."""
     available = []
     for tier, config in MODELS.items():
+        # Skip non-agent entries (Judge, Principal)
+        if config.get("role") in ("judge", "principal"):
+            continue
         provider = config.get("provider")
         if provider == "openrouter":
             if os.environ.get("OPENROUTER_API_KEY"):
@@ -84,8 +87,6 @@ def _get_default_tier() -> str:
         "L0-Reviewer",
         "L1-Coder",
         "L2-Coder",
-        "L3-Coder",
-        "L3-Architect",
     ]
     for tier in preferred_order:
         if tier in available:

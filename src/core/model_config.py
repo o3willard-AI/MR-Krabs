@@ -25,7 +25,13 @@ MODELS = {
         "tools": [],
         "role": "judge",
     },
-    # ── Agent tiers ────────────────────────────────────────────────
+    # ── Agent tiers (L0–L2) ─────────────────────────────────────────
+    # Tiered escalation: L0 (local, free) → L1 (cheap cloud) → L2 (capable cloud)
+    # → Principal Agent (the user's own agent — Hermes, Claude Code, etc.)
+    #
+    # L3 is available as an optional cloud tier that sits between L2 and Principal:
+    #   ["L0-Coder", "L1-Coder", "L2-Coder", "L3-Coder", "Principal"]
+    # By default L3 is unused — escalation jumps from L2 directly to Principal.
     "L0-Planner": {
         "provider": "openrouter",
         "model": "qwen/qwen3.5-397b-a17b",
@@ -65,6 +71,21 @@ MODELS = {
         "temperature": 0.7,
         "tools": ["file_read", "file_write"],
     },
+    # ── Principal Agent (top-level escalation) ─────────────────────
+    # The Principal Agent is the user's own agent — Hermes, Claude Code,
+    # Gemini CLI, opencode, or any other CLI coding agent the user interacts
+    # with as their primary partner. MR-Krabs cannot "see" or manage the
+    # Principal Agent's LLM — when escalation reaches this tier, control
+    # returns to the calling agent with full escalation context.
+    #
+    # This has NO provider/model — the orchestrator detects "Principal"
+    # and returns a structured escalation result instead of calling an LLM.
+    "Principal": {
+        "role": "principal",
+    },
+    # ── Optional cloud tiers (insert before Principal) ────────────
+    # Available but NOT in default escalation path.
+    # To use: pass tiers=["L0-Coder", ..., "L3-Coder", "Principal"]
     "L3-Coder": {
         "provider": "openrouter",
         "model": "anthropic/claude-sonnet-4.6",

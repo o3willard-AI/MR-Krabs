@@ -465,3 +465,36 @@ class TestJudgeEscalationE2E:
             clear_fail_up()
             if "MRKRABS_FAIL_UP" in os.environ:
                 del os.environ["MRKRABS_FAIL_UP"]
+
+    # ── Scenario 12: All L0/L1/L2 exhausted → Principal escalation ─
+
+    def test_all_tiers_exhausted_escalates_to_principal(self):
+        """L0, L1, L2 all fail → control returns to Principal Agent."""
+        reject_json = json.dumps({
+            "score": 0.2, "critique": "Bad",
+            "checks_passed": [], "checks_failed": ["correctness"],
+        })
+
+        def side_effect(url, **kwargs):
+            payload = kwargs.get("json", {})
+            model = payload.get("model", "")
+            content = reject_json if "claude" in model else f"{model} output"
+            mock = MagicMock()
+            mock.status_code = 200
+            mock.json.return_value = {"choices": [{"message": {"content": content}}]}
+            return mock
+
+        with patch("requests.post", side_effect=side_effect):
+            result = self.orchestrator.execute_with_judge(
+                task_id="test_principal",
+                context={"task_spec": "Solve P vs NP"},
+                tiers=["L0-Coder", "L1-Coder", "L2-Coder", "Principal"],
+                max_retries_per_tier=1,
+            )
+
+        assert result["success"] is False
+        assert result.get("escalated_to_principal") is True
+        assert result["tier_used"] == "Principal"
+        assert "Principal" in result["escalation_path"]
+        assert result["escalation_context"]["task"] == "Solve P vs NP"
+        assert len(result["escalation_context"]["tiers_attempted"]) == 3

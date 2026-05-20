@@ -72,7 +72,7 @@ class TestTierManager:
     
     def test_tier_order_constant(self):
         """Test TIER_ORDER has correct tiers."""
-        assert len(TierManager.TIER_ORDER) == 4
+        assert len(TierManager.TIER_ORDER) == 5
         assert TierManager.TIER_ORDER[0].level == TierLevel.L0
         assert TierManager.TIER_ORDER[3].level == TierLevel.L3
     
@@ -219,10 +219,18 @@ class TestTierManagerGetNextTier:
         assert next_tier is not None
         assert next_tier.level == TierLevel.L3
     
-    def test_next_from_l3_none(self):
-        """Test getting next tier from L3 returns None."""
+    def test_next_from_l3_principal(self):
+        """Test getting next tier from L3 returns Principal."""
         l3 = TierManager.get_tier(TierLevel.L3)
         next_tier = TierManager.get_next_tier(l3)
+        
+        assert next_tier is not None
+        assert next_tier.name == "Principal"
+    
+    def test_next_from_principal_none(self):
+        """Test getting next tier from Principal returns None."""
+        principal = TierManager.get_tier_by_name("Principal")
+        next_tier = TierManager.get_next_tier(principal)
         
         assert next_tier is None
 
@@ -231,12 +239,12 @@ class TestTierManagerGetAllTiers:
     """Tests for get_all_tiers method."""
     
     def test_returns_all_tiers(self):
-        """Test get_all_tiers returns all 4 tiers."""
+        """Test get_all_tiers returns all 5 tiers."""
         tiers = TierManager.get_all_tiers()
         
-        assert len(tiers) == 4
+        assert len(tiers) == 5
         assert tiers[0].level == TierLevel.L0
-        assert tiers[-1].level == TierLevel.L3
+        assert tiers[-1].name == "Principal"
     
     def test_returns_copy(self):
         """Test get_all_tiers returns a copy."""
@@ -302,11 +310,11 @@ class TestTierManagerGetMaxTier:
     """Tests for get_max_tier method."""
     
     def test_returns_l3(self):
-        """Test get_max_tier returns L3 (most expensive)."""
+        """Test get_max_tier returns L3-Coder (most expensive non-Principal tier)."""
         max_tier = TierManager.get_max_tier()
         
         assert max_tier.level == TierLevel.L3
-        assert max_tier.name == "L3-Coder"
+        assert max_tier.name == "Principal"
 
 
 class TestTierCostComparison:
