@@ -338,7 +338,7 @@ class TestAuditLogger:
             log_entry = json.loads(captured_logs[0])
             
             assert log_entry["event_type"] == "security_key_removed"
-            assert log_entry["details"]["provider"] == "openai"
+            assert log_entry["provider"] == "openai"
 
 
 class TestVaultSecurity:

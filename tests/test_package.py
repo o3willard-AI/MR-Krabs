@@ -63,7 +63,7 @@ def test_package_can_be_built():
     """Test that the package can be built with setuptools."""
     result = subprocess.run(
         [sys.executable, '-m', 'build', '--sdist', '--wheel'],
-        cwd='/home/sblanken/working/code/MR-Krabs',
+        cwd='/home/sblanken/workspace/MR-Krabs',
         capture_output=True,
         text=True
     )
@@ -77,7 +77,7 @@ def test_package_can_be_built():
 
 def test_cli_entry_point_exists():
     """Test that CLI entry point module exists."""
-    cli_path = Path('/home/sblanken/working/code/MR-Krabs/src/cli/main.py')
+    cli_path = Path('/home/sblanken/workspace/MR-Krabs/src/cli/main.py')
     assert cli_path.exists(), "CLI main module should exist"
     
     # Check it has a main function
@@ -88,7 +88,7 @@ def test_cli_entry_point_exists():
 
 def test_pyproject_toml_exists():
     """Test that pyproject.toml exists and is valid."""
-    pyproject_path = Path('/home/sblanken/working/code/MR-Krabs/pyproject.toml')
+    pyproject_path = Path('/home/sblanken/workspace/MR-Krabs/pyproject.toml')
     assert pyproject_path.exists(), "pyproject.toml should exist"
     
     # Try to parse it as TOML (requires tomllib in Python 3.11+)
@@ -107,7 +107,7 @@ def test_pyproject_toml_exists():
 
 def test_readme_exists():
     """Test that README.md exists."""
-    readme_path = Path('/home/sblanken/working/code/MR-Krabs/README.md')
+    readme_path = Path('/home/sblanken/workspace/MR-Krabs/README.md')
     assert readme_path.exists(), "README.md should exist"
     
     # Check it has content
@@ -118,5 +118,5 @@ def test_readme_exists():
 
 def test_manifest_in_exists():
     """Test that MANIFEST.in exists."""
-    manifest_path = Path('/home/sblanken/working/code/MR-Krabs/MANIFEST.in')
+    manifest_path = Path('/home/sblanken/workspace/MR-Krabs/MANIFEST.in')
     assert manifest_path.exists(), "MANIFEST.in should exist for packaging"
