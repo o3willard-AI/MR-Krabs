@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.core.orchestrator import MODELS
+from src.core.model_config import MODELS
 
 
 class APIKeyValidator:

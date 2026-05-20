@@ -8,72 +8,23 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+import warnings
 
 import requests
+
+from src.core.circuit_breaker import CircuitBreakerRegistry
+from src.core.cost import CostTracker, TokenCount
+from src.core.judge import Judge, Verdict
+from src.core.model_config import MODELS
+from src.core.failure_action import FailureAction
+from src.core.tier_config import get_tier_failure_action, get_tier_max_retries
+from src.core.fail_now import get_fail_now, clear_fail_now, is_fail_now_active, check_mesh_fail_now
+from src.core.fail_now import is_fail_up_active, clear_fail_up, check_mesh_fail_up
 
 # Configuration
 MAX_RETRIES = 3
 RETRY_DELAY = 2
 CONTEXT_SIMPLIFICATION = [1.0, 0.7, 0.4]
-
-# Model Configuration
-MODELS = {
-    "L0-Planner": {
-        "provider": "openrouter",
-        "model": "qwen/qwen3.5-397b-a17b",
-        "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
-        "temperature": 0.3,
-        "tools": ["file_read"],
-    },
-    "L0-Reviewer": {
-        "provider": "openrouter",
-        "model": "qwen/qwen3.5-397b-a17b",
-        "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
-        "temperature": 0.3,
-        "tools": ["file_read"],
-    },
-    "L0-Coder": {
-        "provider": "lmstudio",
-        "model": "qwen/qwen3-coder-30b",
-        "base_url": "http://192.168.101.21:1234/v1",
-        "temperature": 0.7,
-        "tools": ["file_read", "file_write"],
-    },
-    "L1-Coder": {
-        "provider": "openrouter",
-        "model": "x-ai/grok-4.3",
-        "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
-        "temperature": 0.7,
-        "tools": ["file_read", "file_write"],
-    },
-    "L2-Coder": {
-        "provider": "openrouter",
-        "model": "minimax/minimax-m2.7",
-        "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
-        "temperature": 0.7,
-        "tools": ["file_read", "file_write"],
-    },
-    "L3-Coder": {
-        "provider": "openrouter",
-        "model": "anthropic/claude-sonnet-4.6",
-        "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
-        "temperature": 0.7,
-        "tools": ["file_read", "file_write"],
-    },
-    "L3-Architect": {
-        "provider": "openrouter",
-        "model": "anthropic/claude-opus-4.6",
-        "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
-        "temperature": 0.3,
-        "tools": ["file_read"],
-    },
-}
 
 # Import the capability checker
 from src.core.model_capabilities import MODEL_REGISTRY, get_capable_models
@@ -296,6 +247,15 @@ class LLMOrchestrator:
         self.escalations_dir = self.workflow_dir / "escalations"
         self.file_tools = FileTools(self.project_root)
         self.tool_executor = ToolExecutor(self.file_tools)
+        self.cost_tracker = CostTracker()
+        self.circuit_breaker_registry = CircuitBreakerRegistry()
+        
+        # Initialize notifier
+        from src.core.notify import FallbackNotifier, MeshNotifier, TelegramNotifier
+        self.notifier = FallbackNotifier(
+            MeshNotifier(),
+            TelegramNotifier(),
+        )
 
         # Create directories
         for d in [self.handoffs_dir, self.escalations_dir, self.tasks_dir]:
@@ -664,7 +624,7 @@ class LLMOrchestrator:
         max_task_duration_seconds: int = 300,
     ) -> dict[str, Any]:
         """Execute a task using the specified tier.
-
+        
         Args:
             task_id: Unique task identifier.
             tier: Tier to use (e.g. "L0-Coder").
@@ -674,131 +634,304 @@ class LLMOrchestrator:
             max_task_duration_seconds: Maximum duration for the entire task execution.
                 Default: 300s (5 minutes).
         """
+        warnings.warn(
+            "execute_task() is deprecated and will be removed in a future version. "
+            "Use execute_with_judge() instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
+        
         from src.core.timeout import TaskTimeout
-        
-        # Pre-flight capability check
-        token_count = 0  # We'll estimate this from the context
-        requires_tools = False
-        requires_vision = False
-        
-        # Check if task uses tools by examining context and model config
-        tier_config = MODELS.get(tier, {})
-        if tier_config:
-            tools = tier_config.get("tools", [])
-            requires_tools = len(tools) > 0
-            
-        # Estimate token count from context (very rough approximation)
-        # This is a simplified approach - in reality, we'd want to use token counting
-        # but for now we'll use a simple heuristic
-        if context:
-            total_chars = sum(len(str(v)) for v in context.values())
-            token_count = max(1000, total_chars // 4)  # Rough estimate (avg 4 chars per token)
-        
-        # Check if the model can handle this task
-        model_id = tier_config.get("model")
-        if model_id:
-            capability = MODEL_REGISTRY.get(model_id)
-            if capability is not None:
-                # Check context window
-                if token_count > 0 and not capability.can_handle_context(token_count):
-                    print(f"Warning: Model {model_id} has insufficient context window ({capability.context_window} < {token_count})")
-                    # Try to find a capable model from the same tier or higher tiers
-                    from src.core.tier_manager import TierManager, TierLevel
-                    
-                    # Find the tier level for this tier name
-                    try:
-                        tier_obj = TierManager.get_tier_by_name(tier)
-                        if tier_obj:
-                            fallback_model_id = TierManager().find_capable_model(
-                                tier_obj.level, token_count, requires_tools
-                            )
-                            if fallback_model_id:
-                                print(f"Switching to fallback model: {fallback_model_id}")
-                                # We need to update the configuration to use this model
-                                # For now we'll just log it - in practice this would be more involved
-                                pass
-                    except Exception as e:
-                        print(f"Failed to find fallback model: {e}")
-                        
-                # Check tool calling support
-                if requires_tools and not capability.can_handle_task(requires_tools=True):
-                    print(f"Warning: Model {model_id} does not support tool calling")
-                    # Try to find a capable model from the same tier or higher tiers
-                    from src.core.tier_manager import TierManager, TierLevel
-                    
-                    try:
-                        tier_obj = TierManager.get_tier_by_name(tier)
-                        if tier_obj:
-                            fallback_model_id = TierManager().find_capable_model(
-                                tier_obj.level, token_count, requires_tools
-                            )
-                            if fallback_model_id:
-                                print(f"Switching to fallback model: {fallback_model_id}")
-                                # We need to update the configuration to use this model
-                                # For now we'll just log it - in practice this would be more involved
-                                pass
-                    except Exception as e:
-                        print(f"Failed to find fallback model: {e}")
-
-        # Wrap the entire task execution in timeout
         with TaskTimeout(max_task_duration_seconds):
-            template = self._load_prompt_template(tier)
-            tier_config = MODELS.get(tier, {})
-            temperature = tier_config.get("temperature", 0.7)
-
-            system_prompt = self._build_system_prompt(tier, template)
-            user_prompt = self._build_user_prompt(task_id, tier, context, template)
-
-            result = self.call_llm_with_retry(
-                tier, system_prompt, user_prompt, temperature, timeout_seconds=timeout_seconds
+            return self.execute_with_judge(
+                task_id=task_id,
+                context=context,
+                tiers=[tier],
+                max_retries_per_tier=3,
+                timeout_seconds=timeout_seconds or 300.0
             )
-            timestamp = datetime.now(UTC)
 
-            if result["success"]:
-                # Execute tool calls from LLM output
+    def execute_with_judge(
+        self,
+        task_id: str,
+        context: dict[str, Any],
+        tiers: list[str] | None = None,
+        max_retries_per_tier: int = 3,
+        judge_model: str = "L2-Coder",
+        timeout_seconds: float = 300,
+    ) -> dict[str, Any]:
+        """Execute a task using Judge-based retry/escalation logic.
+
+        For each tier, calls the LLM up to max_retries_per_tier times.
+        After each call, a Judge (LLM-powered) evaluates the output quality.
+        If accepted, returns immediately. If rejected, feeds critique back
+        as feedback for the next retry. If all retries exhausted, escalates
+        to the next tier.
+
+        CostTracker is observer-only -- tracks spend, never blocks.
+        CircuitBreaker gates each tier call -- blocked tiers are skipped.
+
+        Returns:
+            dict with: task_id, success, output, tier_used, attempts_total,
+            retries_per_tier, verdict, cost_summary, escalation_path,
+            duration_seconds, tool_results
+        """
+        # Check for fail-now signal
+        fail_now_tier = get_fail_now()
+        if fail_now_tier:
+            # Check mesh signal file
+            check_mesh_fail_now()
+            # Validate the tier exists
+            if fail_now_tier not in MODELS:
+                # Fall through to closest available tier
+                available = [t for t in tiers or ["L0-Coder", "L1-Coder", "L2-Coder", "L3-Coder"] if t in MODELS]
+                fail_now_tier = available[-1] if available else None
+            
+            if fail_now_tier:
+                tier_config = MODELS.get(fail_now_tier, {})
+                # One-shot call — no retry, no judge
+                result = self.call_llm_with_retry(
+                    fail_now_tier, "System prompt", str(context.get("task_spec", task_id)),
+                    temperature=tier_config.get("temperature", 0.7),
+                    timeout_seconds=timeout_seconds,
+                )
+                clear_fail_now()  # auto-clear
+                
+                if result["success"]:
+                    return {
+                        "task_id": task_id, "success": True,
+                        "output": result["output"], "tier_used": fail_now_tier,
+                        "attempts_total": 1, "fail_now": True,
+                        "cost_summary": self.cost_tracker.get_summary(),
+                        "duration_seconds": result.get("duration_seconds", 0),
+                        "escalation_path": [fail_now_tier],
+                        "retries_per_tier": {fail_now_tier: 1},
+                    }
+                else:
+                    # Fail-now tier failed — try next available tier
+                    # (graceful fallthrough, then clear)
+                    pass
+            
+            clear_fail_now()
+        
+        tiers = tiers or ["L0-Coder", "L1-Coder", "L2-Coder", "L3-Coder"]
+
+        start_time = time.monotonic()
+        attempts_total = 0
+        retries_per_tier: dict[str, int] = {}
+        escalation_path: list[str] = []
+
+        for tier in tiers:
+            feedback = ""
+            retries_per_tier[tier] = 0
+            fail_up_aborted = False  # track if fail_up triggered this tier
+
+            # --- Circuit breaker gate ---
+            tier_config = MODELS.get(tier, {})
+            provider = tier_config.get("provider", "")
+            model_name = tier_config.get("model", "")
+            if provider and model_name:
+                cb = self.circuit_breaker_registry.get(provider, model_name)
+                if not cb.can_execute():
+                    print(f"Skipping tier {tier} due to circuit breaker")
+                    escalation_path.append(tier)
+                    continue
+
+            # --- FailUp check: abort this tier, bump one level ---
+            check_mesh_fail_up()
+            if is_fail_up_active():
+                print(f"[FAIL_UP] Aborting tier {tier} — bumping up one level")
+                clear_fail_up()
+                escalation_path.append(tier)
+                continue  # skip to next tier
+
+            # --- Retry loop ---
+            for retry_num in range(1, max_retries_per_tier + 1):
+                # --- FailUp mid-retry check ---
+                check_mesh_fail_up()
+                if is_fail_up_active():
+                    print(f"[FAIL_UP] Aborting tier {tier} mid-retry — bumping up one level")
+                    clear_fail_up()
+                    fail_up_aborted = True
+                    retries_per_tier[tier] = retry_num - 1
+                    break  # exit retry loop, go to next tier
+
+                user_prompt = context.get("task_spec", task_id)
+                if feedback:
+                    user_prompt = (
+                        f"{user_prompt}\n\n## Previous Attempt Feedback\n\n"
+                        f"The prior output was rejected by the quality judge.\n"
+                        f"Critique: {feedback}\n\nPlease fix these issues and try again."
+                    )
+
+                result = self.call_llm_with_retry(
+                    tier, "System prompt", str(user_prompt),
+                    temperature=tier_config.get("temperature", 0.7),
+                    timeout_seconds=timeout_seconds,
+                )
+
+                attempts_total += 1
+                retries_per_tier[tier] += 1
+
+                if not result["success"]:
+                    # HTTP/network failure — skip remaining retries for this tier
+                    print(f"Tier {tier} HTTP failure: {result.get('error', 'unknown')}")
+                    break
+
+                # --- Tool execution ---
                 tool_result = self.tool_executor.parse_and_execute_tools(result["output"])
 
-                # Check if file_write tools succeeded
-                file_writes = [r for r in tool_result["tool_results"] if r["tool"] == "file_write"]
-                if file_writes:
-                    failed_writes = [w for w in file_writes if not w["success"]]
-                    if failed_writes:
-                        result["success"] = False
-                        result["error"] = (
-                            f"file_write failed: {failed_writes[0].get('error', 'Unknown error')}"
-                        )
+                # --- Judge evaluation ---
+                try:
+                    task_text = context.get("task_spec", task_id)
+                    judge = Judge(model=judge_model)
+                    verdict = judge.evaluate(task=str(task_text), output=result["output"])
+                except Exception as e:
+                    # Judge unavailable — degrade gracefully, treat as rejection
+                    verdict = Verdict(
+                        accepted=False, score=0.0,
+                        critique=f"Judge unavailable: {e}",
+                        checks_passed=[], checks_failed=["judge_unavailable"],
+                    )
 
-                result["tool_results"] = tool_result
-                handoff = self._log_handoff(
-                    task_id,
-                    tier,
-                    context,
-                    result["output"],
-                    timestamp,
-                    result["duration_seconds"],
-                    result["attempt"],
-                    tool_result,
-                )
-            else:
-                handoff = self._log_failure(
-                    task_id,
-                    tier,
-                    context,
-                    result.get("error", "Unknown error"),
-                    timestamp,
-                    result["attempts"],
-                )
+                # --- Cost tracking (observer only, never blocks) ---
+                try:
+                    from src.core.cost import TokenCount
+                    tier_mod = model_name
+                    tokens = TokenCount(
+                        prompt_tokens=len(str(user_prompt)) // 4,
+                        completion_tokens=len(result.get("output", "")) // 4,
+                    )
+                    self.cost_tracker.record(
+                        task_id, tier, tier_mod, tokens,
+                        result.get("duration_seconds", 0.0),
+                    )
+                except Exception:
+                    pass  # cost tracking failure should never block execution
 
-            return {
-                "task_id": task_id,
-                "tier": tier,
-                "success": result["success"],
-                "output": result.get("output", ""),
-                "attempts": result.get("attempt", result.get("attempts", 0)),
-                "duration_seconds": result.get("duration_seconds", 0),
-                "ready_for_escalation": result.get("ready_for_escalation", False),
-                "tool_results": result.get(
-                    "tool_results", {"tool_results": [], "tools_executed": 0, "all_succeeded": True}
-                ),
-                "handoff_log": handoff,
-            }
+                # --- Verdict ---
+                if verdict.accepted:
+                    duration_seconds = time.monotonic() - start_time
+                    return {
+                        "task_id": task_id,
+                        "success": True,
+                        "output": result["output"],
+                        "tier_used": tier,
+                        "attempts_total": attempts_total,
+                        "retries_per_tier": retries_per_tier,
+                        "verdict": verdict,
+                        "cost_summary": self.cost_tracker.get_summary(),
+                        "escalation_path": escalation_path + [tier],
+                        "duration_seconds": duration_seconds,
+                        "tool_results": tool_result,
+                    }
+
+                # Rejected — save feedback for next retry
+                feedback = verdict.critique
+                print(f"Tier {tier} retry {retry_num} rejected: {verdict.critique}")
+
+            # All retries exhausted for this tier (or fail_up aborted)
+            if fail_up_aborted:
+                # FailUp aborted intentionally — skip failure actions, do NOT re-append to path
+                escalation_path.append(tier)  # already tracked
+                continue  # move to next tier
+            
+            # Normal retry exhaustion — run failure action
+            escalation_path.append(tier)
+            failure_action = get_tier_failure_action(tier)
+        
+        def build_notification_message(task_id: str, tier: str, cost_summary: dict, verdict) -> str:
+            """Build notification message for escalation."""
+            # Safely extract total_cost from cost_summary (handling MagicMock in tests)
+            total_cost = 0.0
+            if isinstance(cost_summary, dict):
+                total_cost = cost_summary.get('total_cost', 0.0)
+            elif hasattr(cost_summary, 'get'):
+                try:
+                    total_cost = cost_summary.get('total_cost', 0.0)
+                except Exception:
+                    # If we can't get it, default to 0
+                    total_cost = 0.0
+            
+            message_parts = [
+                f"⚠️ *Task Escalation Alert* ⚠️",
+                f"**Task ID:** {task_id}",
+                f"**Tier:** {tier}",
+                f"**Spend So Far:** ${total_cost:.4f}",
+            ]
+            
+            if verdict:
+                message_parts.append(f"**Failure Reason:** {verdict.critique}")
+            
+            if failure_action == FailureAction.NOTIFY_AND_ESCALATE:
+                message_parts.append("**Action Taken:** Escalating to next tier")
+            elif failure_action == FailureAction.NOTIFY_AND_WAIT:
+                message_parts.append("**Action Taken:** WAITING FOR HUMAN CONFIRMATION")
+                message_parts.append(f"**Human Action Needed:** Confirm or deny at ~/.mrkrabs/pending/{task_id}.json")
+            
+            return "\\n".join(message_parts)
+        
+        if failure_action == FailureAction.LOG_ONLY:
+            # Just log and continue to next tier
+            print(f"Tier {tier} failed (log_only).")
+            
+        elif failure_action == FailureAction.NOTIFY_AND_ESCALATE:
+            # Log spend, log failure, send notification, then continue to next tier
+            print(f"[ESCALATE] Tier {tier} failed. Spend: ${self.cost_tracker.get_summary()}")
+            self.notifier.send(
+                message=build_notification_message(task_id, tier, self.cost_tracker.get_summary(), verdict),
+                urgency="normal",
+                context={"task_id": task_id, "tier": tier}
+            )
+            
+        elif failure_action == FailureAction.NOTIFY_AND_WAIT:
+            # Write pending file, wait for human, send notification
+            from src.core.human_gate import write_pending_file, wait_for_human
+            
+            write_pending_file(task_id, {
+                "tier": tier, 
+                "attempts": retries_per_tier[tier],
+                "cost_summary": self.cost_tracker.get_summary(),
+                "verdict": verdict,  # last verdict
+            })
+            
+            self.notifier.send(
+                message=build_notification_message(task_id, tier, self.cost_tracker.get_summary(), verdict),
+                urgency="high",
+                context={"task_id": task_id, "tier": tier}
+            )
+            
+            confirmed, reason = wait_for_human(task_id)
+            if not confirmed:
+                # Abort — stop entire escalation
+                duration_seconds = time.monotonic() - start_time
+                return {
+                    "task_id": task_id,
+                    "success": False,
+                    "output": None,
+                    "tier_used": None,
+                    "attempts_total": attempts_total,
+                    "retries_per_tier": retries_per_tier,
+                    "verdict": verdict,
+                    "cost_summary": self.cost_tracker.get_summary(),
+                    "escalation_path": escalation_path,
+                    "duration_seconds": duration_seconds,
+                    "tool_results": None,
+                    "reason": reason,
+                }
+            # Confirmed — continue to next tier
+
+        # All tiers exhausted — total failure
+        return {
+            "task_id": task_id,
+            "success": False,
+            "output": None,
+            "tier_used": None,
+            "attempts_total": attempts_total,
+            "retries_per_tier": retries_per_tier,
+            "verdict": None,
+            "cost_summary": self.cost_tracker.get_summary(),
+            "escalation_path": escalation_path,
+            "duration_seconds": time.monotonic() - start_time,
+            "tool_results": None,
+        }

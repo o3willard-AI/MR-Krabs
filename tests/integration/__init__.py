@@ -1,1 +1,1 @@
-# Integration tests for MR-Krabs
+# Integration test package for MR-Krabs

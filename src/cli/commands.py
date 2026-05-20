@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.config import config_to_budget, load_config  # noqa: E402
 from src.core.cost import Budget, CostTracker, TokenCount  # noqa: E402
-from src.core.orchestrator import MODELS  # noqa: E402
+from src.core.model_config import MODELS  # noqa: E402
 
 def cmd_init(config_path: Path | None = None) -> int:
     """Interactive setup wizard."""

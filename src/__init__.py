@@ -19,7 +19,8 @@ from decimal import Decimal
 from typing import Optional  # noqa: F401
 
 from src.core.cost import Budget, BudgetExceededError, CostTracker, TokenCount
-from src.core.orchestrator import MODELS, LLMOrchestrator
+from src.core.model_config import MODELS
+from src.core.orchestrator import LLMOrchestrator
 from src.core.tier_manager import Tier, TierLevel, TierManager
 
 

@@ -10,7 +10,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.cli.commands import cmd_doctor, cmd_dry_run, cmd_explain, cmd_init, cmd_stats  # noqa: E402
 from src.core.metrics import MetricsCollector  # noqa: E402
-from src.core.orchestrator import MODELS, LLMOrchestrator  # noqa: E402
+from src.core.model_config import MODELS  # noqa: E402
+from src.core.orchestrator import LLMOrchestrator  # noqa: E402
 from src.core.cost import CostTracker  # noqa: E402
 
 try:

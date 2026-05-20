@@ -4,7 +4,7 @@ import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["OPENROUTER_API_KEY"] = open("/home/ubuntu/.openrouter-key").read().strip()
 
-from src.core.orchestrator import MODELS
+from src.core.model_config import MODELS
 original_url = MODELS["L0-Coder"]["base_url"]
 
 # Force L0 failure by pointing to dead endpoint
