@@ -13,6 +13,8 @@ MR-Krabs uses a dedicated Judge model entry (not an agent tier) to make
 this separation explicit in the configuration.
 """
 
+from src.core.constants import LM_STUDIO_BASE_URL, OPENROUTER_BASE_URL
+
 MODELS = {
     # ── Judge model (quality gate) ─────────────────────────────────
     # Always a reasoning model — never a small/cheap tier agent.
@@ -20,7 +22,7 @@ MODELS = {
         "provider": "openrouter",
         "model": "anthropic/claude-sonnet-4.6",
         "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
+        "base_url": OPENROUTER_BASE_URL,
         "temperature": 0.1,
         "tools": [],
         "role": "judge",
@@ -36,7 +38,7 @@ MODELS = {
         "provider": "openrouter",
         "model": "qwen/qwen3.5-397b-a17b",
         "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
+        "base_url": OPENROUTER_BASE_URL,
         "temperature": 0.3,
         "tools": ["file_read"],
     },
@@ -44,14 +46,14 @@ MODELS = {
         "provider": "openrouter",
         "model": "qwen/qwen3.5-397b-a17b",
         "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
+        "base_url": OPENROUTER_BASE_URL,
         "temperature": 0.3,
         "tools": ["file_read"],
     },
     "L0-Coder": {
         "provider": "lmstudio",
         "model": "qwen/qwen3-coder-30b",
-        "base_url": "http://192.168.101.21:1234/v1",
+        "base_url": LM_STUDIO_BASE_URL,
         "temperature": 0.7,
         "tools": ["file_read", "file_write"],
     },
@@ -59,7 +61,7 @@ MODELS = {
         "provider": "openrouter",
         "model": "x-ai/grok-4.3",
         "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
+        "base_url": OPENROUTER_BASE_URL,
         "temperature": 0.7,
         "tools": ["file_read", "file_write"],
     },
@@ -67,7 +69,7 @@ MODELS = {
         "provider": "openrouter",
         "model": "minimax/minimax-m2.7",
         "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
+        "base_url": OPENROUTER_BASE_URL,
         "temperature": 0.7,
         "tools": ["file_read", "file_write"],
     },
@@ -90,7 +92,7 @@ MODELS = {
         "provider": "openrouter",
         "model": "anthropic/claude-sonnet-4.6",
         "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
+        "base_url": OPENROUTER_BASE_URL,
         "temperature": 0.7,
         "tools": ["file_read", "file_write"],
     },
@@ -98,7 +100,7 @@ MODELS = {
         "provider": "openrouter",
         "model": "anthropic/claude-opus-4.6",
         "env_var": "OPENROUTER_API_KEY",
-        "base_url": "https://openrouter.ai/api/v1",
+        "base_url": OPENROUTER_BASE_URL,
         "temperature": 0.3,
         "tools": ["file_read"],
     },

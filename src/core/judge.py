@@ -19,6 +19,7 @@ from typing import List, Optional
 
 import requests
 
+from src.core.constants import JUDGE_MAX_TOKENS, OPENROUTER_REFERER
 from src.core.model_config import MODELS
 from src.core.judge_criteria import CODE_CRITERIA, QA_CRITERIA, detect_task_type
 
@@ -183,7 +184,7 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
-                "HTTP-Referer": "https://github.com/pairadmin/orchestrator",
+                "HTTP-Referer": OPENROUTER_REFERER,
                 "X-Title": "Multi-Tier Orchestrator",
             }
             payload = {

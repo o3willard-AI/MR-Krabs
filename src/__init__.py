@@ -169,18 +169,30 @@ def ask(
         )
     
     orchestrator = LLMOrchestrator()
+    start_time = time.time()
     
-    # If auto_escalate is True, try all tiers from cheapest
+    # If auto_escalate is True, use the judge-based escalation pipeline
     if auto_escalate:
-        return _ask_with_escalation(
-            tracker=tracker,
-            orchestrator=orchestrator,
-            prompt=prompt,
-            system_prompt=sys_prompt,
-            model_name=model_name,
-            temperature=temperature,
+        result = orchestrator.execute_with_judge(
+            task_id=f"ask_{hash(prompt) & 0xFFFF:04x}",
+            context={"task_spec": prompt},
+            tiers=None,  # use default tiers: L0→L1→L2→Principal
+            max_retries_per_tier=3,
+            judge_model="Judge",
         )
-    
+        duration = time.time() - start_time
+        output = result.get("output") or ""
+        tier_used = result.get("tier_used", "none")
+        return AskResult(
+            output=output,
+            cost=float(tracker.get_daily_total()),
+            tier=tier_used,
+            model=MODELS.get(tier_used, {}).get("model", ""),
+            success=result.get("success", False),
+            duration_seconds=result.get("duration_seconds", duration),
+            attempts=result.get("attempts_total", 0),
+        )
+
     # Single-tier execution (original behavior)
     reservation = tracker.reserve_budget(scope="ask", estimated_cost=estimated_cost)
     
@@ -237,10 +249,15 @@ def _ask_with_escalation(
     model_name: str,
     temperature: float,
 ) -> AskResult:
-    """Execute with auto-escalation across tiers.
+    """Execute with auto-escalation across tiers. DEPRECATED.
     
-    Tries L0 -> L1 -> L2 -> L3 on failure, returns the best result.
+    Use LLMOrchestrator.execute_with_judge() instead.
     """
+    import warnings
+    warnings.warn(
+        "_ask_with_escalation is deprecated. Use execute_with_judge() instead.",
+        DeprecationWarning, stacklevel=2,
+    )
     start_time = time.time()
     total_attempts = 0
     last_error = None
