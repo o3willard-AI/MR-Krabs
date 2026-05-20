@@ -15,7 +15,7 @@ authors = [
 maintainers = [
     {name = "MR-Krabs Contributors"}
 ]
-keywords = ["llm", "orchestration", "ai", "cost-optimization", "budget-tracking", "openrouter", "crewai", "langchain"]
+keywords = ["llm", "orchestration", "ai", "cost-optimization", "budget-tracking", "openrouter", "langchain"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -48,7 +48,6 @@ dev = [
     "ruff>=0.1.6",
     "pre-commit>=3.6.0",
 ]
-crewai = ["crewai>=0.70.0,<1.0.0"]
 anthropic = ["anthropic>=0.39.0"]
 openai = ["openai>=1.55.0"]
 
