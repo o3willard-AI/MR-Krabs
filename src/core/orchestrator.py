@@ -43,7 +43,7 @@ MODELS = {
     },
     "L1-Coder": {
         "provider": "openrouter",
-        "model": "x-ai/grok-4.1-fast",
+        "model": "x-ai/grok-4.3",
         "env_var": "OPENROUTER_API_KEY",
         "base_url": "https://openrouter.ai/api/v1",
         "temperature": 0.7,
