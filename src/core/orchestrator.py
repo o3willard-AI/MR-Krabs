@@ -612,6 +612,41 @@ class LLMOrchestrator:
             json.dump(log_entry, f, indent=2)
         return str(log_file)
 
+    def _build_notification_message(
+        self, task_id: str, tier: str, cost_summary: dict, verdict, failure_action: "FailureAction"
+    ) -> str:
+        """Build notification message for escalation."""
+        # Safely extract total_cost from cost_summary (handling MagicMock in tests)
+        total_cost = 0.0
+        if isinstance(cost_summary, dict):
+            total_cost = cost_summary.get("total_cost", 0.0)
+        elif hasattr(cost_summary, "get"):
+            try:
+                total_cost = cost_summary.get("total_cost", 0.0)
+            except Exception:
+                total_cost = 0.0
+
+        message_parts = [
+            "\u26a0\ufe0f *Task Escalation Alert* \u26a0\ufe0f",
+            f"**Task ID:** {task_id}",
+            f"**Tier:** {tier}",
+            f"**Spend So Far:** ${total_cost:.4f}",
+        ]
+
+        if verdict:
+            message_parts.append(f"**Failure Reason:** {verdict.critique}")
+
+        if failure_action == FailureAction.NOTIFY_AND_ESCALATE:
+            message_parts.append("**Action Taken:** Escalating to next tier")
+        elif failure_action == FailureAction.NOTIFY_AND_WAIT:
+            message_parts.append("**Action Taken:** WAITING FOR HUMAN CONFIRMATION")
+            message_parts.append(
+                f"**Human Action Needed:** Confirm or deny at "
+                f"~/.mrkrabs/pending/{task_id}.json"
+            )
+
+        return "\\n".join(message_parts)
+
     def execute_task(
         self,
         task_id: str,
@@ -868,94 +903,67 @@ class LLMOrchestrator:
 
             # All retries exhausted for this tier (or fail_up aborted)
             if fail_up_aborted:
-                # FailUp aborted intentionally — skip failure actions, do NOT re-append to path
-                escalation_path.append(tier)  # already tracked
+                # FailUp aborted intentionally — skip failure actions
+                escalation_path.append(tier)
                 continue  # move to next tier
-            
-            # Normal retry exhaustion — run failure action
+
+            # Normal retry exhaustion — run failure action NOW (per-tier)
             escalation_path.append(tier)
             failure_action = get_tier_failure_action(tier)
-        
-        def build_notification_message(task_id: str, tier: str, cost_summary: dict, verdict) -> str:
-            """Build notification message for escalation."""
-            # Safely extract total_cost from cost_summary (handling MagicMock in tests)
-            total_cost = 0.0
-            if isinstance(cost_summary, dict):
-                total_cost = cost_summary.get('total_cost', 0.0)
-            elif hasattr(cost_summary, 'get'):
-                try:
-                    total_cost = cost_summary.get('total_cost', 0.0)
-                except Exception:
-                    # If we can't get it, default to 0
-                    total_cost = 0.0
-            
-            message_parts = [
-                f"⚠️ *Task Escalation Alert* ⚠️",
-                f"**Task ID:** {task_id}",
-                f"**Tier:** {tier}",
-                f"**Spend So Far:** ${total_cost:.4f}",
-            ]
-            
-            if verdict:
-                message_parts.append(f"**Failure Reason:** {verdict.critique}")
-            
-            if failure_action == FailureAction.NOTIFY_AND_ESCALATE:
-                message_parts.append("**Action Taken:** Escalating to next tier")
+
+            if failure_action == FailureAction.LOG_ONLY:
+                # Just log and continue to next tier
+                print(f"Tier {tier} failed (log_only).")
+
+            elif failure_action == FailureAction.NOTIFY_AND_ESCALATE:
+                # Log spend, log failure, send notification, then continue to next tier
+                print(f"[ESCALATE] Tier {tier} failed. Spend: ${self.cost_tracker.get_summary()}")
+                self.notifier.send(
+                    message=self._build_notification_message(
+                        task_id, tier, self.cost_tracker.get_summary(), verdict, failure_action
+                    ),
+                    urgency="normal",
+                    context={"task_id": task_id, "tier": tier}
+                )
+
             elif failure_action == FailureAction.NOTIFY_AND_WAIT:
-                message_parts.append("**Action Taken:** WAITING FOR HUMAN CONFIRMATION")
-                message_parts.append(f"**Human Action Needed:** Confirm or deny at ~/.mrkrabs/pending/{task_id}.json")
-            
-            return "\\n".join(message_parts)
-        
-        if failure_action == FailureAction.LOG_ONLY:
-            # Just log and continue to next tier
-            print(f"Tier {tier} failed (log_only).")
-            
-        elif failure_action == FailureAction.NOTIFY_AND_ESCALATE:
-            # Log spend, log failure, send notification, then continue to next tier
-            print(f"[ESCALATE] Tier {tier} failed. Spend: ${self.cost_tracker.get_summary()}")
-            self.notifier.send(
-                message=build_notification_message(task_id, tier, self.cost_tracker.get_summary(), verdict),
-                urgency="normal",
-                context={"task_id": task_id, "tier": tier}
-            )
-            
-        elif failure_action == FailureAction.NOTIFY_AND_WAIT:
-            # Write pending file, wait for human, send notification
-            from src.core.human_gate import write_pending_file, wait_for_human
-            
-            write_pending_file(task_id, {
-                "tier": tier, 
-                "attempts": retries_per_tier[tier],
-                "cost_summary": self.cost_tracker.get_summary(),
-                "verdict": verdict,  # last verdict
-            })
-            
-            self.notifier.send(
-                message=build_notification_message(task_id, tier, self.cost_tracker.get_summary(), verdict),
-                urgency="high",
-                context={"task_id": task_id, "tier": tier}
-            )
-            
-            confirmed, reason = wait_for_human(task_id)
-            if not confirmed:
-                # Abort — stop entire escalation
-                duration_seconds = time.monotonic() - start_time
-                return {
-                    "task_id": task_id,
-                    "success": False,
-                    "output": None,
-                    "tier_used": None,
-                    "attempts_total": attempts_total,
-                    "retries_per_tier": retries_per_tier,
-                    "verdict": verdict,
+                # Write pending file, wait for human, send notification
+                from src.core.human_gate import write_pending_file, wait_for_human
+
+                write_pending_file(task_id, {
+                    "tier": tier,
+                    "attempts": retries_per_tier[tier],
                     "cost_summary": self.cost_tracker.get_summary(),
-                    "escalation_path": escalation_path,
-                    "duration_seconds": duration_seconds,
-                    "tool_results": None,
-                    "reason": reason,
-                }
-            # Confirmed — continue to next tier
+                    "verdict": verdict,  # last verdict
+                })
+
+                self.notifier.send(
+                    message=self._build_notification_message(
+                        task_id, tier, self.cost_tracker.get_summary(), verdict, failure_action
+                    ),
+                    urgency="high",
+                    context={"task_id": task_id, "tier": tier}
+                )
+
+                confirmed, reason = wait_for_human(task_id)
+                if not confirmed:
+                    # Abort — stop entire escalation
+                    duration_seconds = time.monotonic() - start_time
+                    return {
+                        "task_id": task_id,
+                        "success": False,
+                        "output": None,
+                        "tier_used": None,
+                        "attempts_total": attempts_total,
+                        "retries_per_tier": retries_per_tier,
+                        "verdict": verdict,
+                        "cost_summary": self.cost_tracker.get_summary(),
+                        "escalation_path": escalation_path,
+                        "duration_seconds": duration_seconds,
+                        "tool_results": None,
+                        "reason": reason,
+                    }
+                # Confirmed — continue to next tier
 
         # All tiers exhausted — total failure
         return {

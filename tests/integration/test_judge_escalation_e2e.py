@@ -614,37 +614,61 @@ class TestJudgeEscalationE2E:
     # ── Test 4: Notifier fires on escalation with correct urgency ───────────
 
     def test_notifier_fires_on_escalation_with_correct_urgency(self):
-        """Notifier fires with urgency='normal' when a tier fails and escalates.
+        """Notifier fires per-tier with urgency='normal' when escalating.
 
-        The failure_action if/elif block runs after the for-tier loop exits,
-        so we use a single tier that fails — allowing the post-loop check
-        to execute the NOTIFY_AND_ESCALATE branch.
+        After the fix, failure_action dispatches inside the for-tier loop.
+        L0 fails → notifier fires → escalation continues to L1 which succeeds.
         """
         reject_json = json.dumps({
             "score": 0.3, "critique": "Bad",
             "checks_passed": [], "checks_failed": ["correctness"],
         })
+        accept_json = json.dumps({
+            "score": 0.9, "critique": "Excellent",
+            "checks_passed": ["correctness"], "checks_failed": [],
+        })
 
-        # Single tier, rejected by judge → loop exits, failure_action runs
-        responses = {
-            "qwen3-coder-30b": ("L0 output", 200),
-            "anthropic/claude-sonnet": (reject_json, 200),
-        }
+        # Track call order so judge returns reject first, accept second
+        judge_calls = [0]
+
+        def sequential_post(url, **kwargs):
+            payload = kwargs.get("json", {})
+            model = payload.get("model", "")
+            mock = MagicMock()
+            mock.status_code = 200
+
+            if "qwen3-coder" in model:
+                content = "L0 output"
+            elif "grok" in model:
+                content = "L1 output"
+            elif "claude" in model:
+                # First judge call: reject, second: accept
+                judge_calls[0] += 1
+                content = reject_json if judge_calls[0] == 1 else accept_json
+            else:
+                content = accept_json
+
+            mock.json.return_value = {
+                "choices": [{"message": {"content": content}}],
+                "model": model,
+            }
+            return mock
 
         mock_notifier = MagicMock()
         self.orchestrator.notifier = mock_notifier
 
         with patch("src.core.orchestrator.get_tier_failure_action",
                    return_value=FailureAction.NOTIFY_AND_ESCALATE), \
-             patch("requests.post", side_effect=_mock_post_for_models(responses)):
+             patch("requests.post", side_effect=sequential_post):
             result = self.orchestrator.execute_with_judge(
                 task_id="test_notifier_urgency",
                 context={"task_spec": "Complex task"},
-                tiers=["L0-Coder"],
+                tiers=["L0-Coder", "L1-Coder"],
                 max_retries_per_tier=1,
             )
 
-        assert result["success"] is False  # all tiers exhausted
+        assert result["success"] is True
+        assert result["tier_used"] == "L1-Coder"
         mock_notifier.send.assert_called()
         call_kwargs = mock_notifier.send.call_args.kwargs
         assert call_kwargs.get("urgency") == "normal", \

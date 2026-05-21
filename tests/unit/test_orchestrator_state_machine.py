@@ -250,62 +250,73 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         self.assertEqual(result["tier_used"], "L1-Coder")
 
     def test_failure_action_notify_and_escalate(self):
-        """NOTIFY_AND_ESCALATE: single tier fails → notifier fires, total failure.
+        """NOTIFY_AND_ESCALATE: L0 fails → notifier fires per-tier → L1 succeeds.
 
-        The failure_action if/elif block (line 910) runs AFTER the for-tier
-        loop exits. A subsequent tier succeeding returns early, skipping the
-        notifier. So this test uses a single tier that fails, allowing the
-        post-loop failure_action check to fire.
+        After the fix, failure_action dispatches inside the for-tier loop
+        (not post-loop), so L0's notification fires immediately and
+        escalation continues to L1 which succeeds.
         """
         mock_llm = self.orchestrator.call_llm_with_retry = MagicMock()
         mock_llm.side_effect = [
             {"success": True, "output": "L0 out", "attempt": 1, "duration_seconds": 1},
+            {"success": True, "output": "L1 out", "attempt": 1, "duration_seconds": 1},
+        ]
+
+        verdicts = [
+            Verdict(accepted=False, score=0.3, critique="no",
+                    checks_passed=[], checks_failed=["c"]),
+            Verdict(accepted=True, score=0.9, critique="yes",
+                    checks_passed=["c"], checks_failed=[]),
         ]
 
         with patch("src.core.orchestrator.get_tier_failure_action",
                    return_value=FailureAction.NOTIFY_AND_ESCALATE), \
-             patch.object(Judge, "evaluate", return_value=Verdict(
-                 accepted=False, score=0.3, critique="no",
-                 checks_passed=[], checks_failed=["c"],
-             )):
+             patch.object(Judge, "evaluate", side_effect=verdicts):
             result = self.orchestrator.execute_with_judge(
                 task_id="test_notify_esc",
                 context={"task_spec": "Write code"},
-                tiers=["L0-Coder"],
+                tiers=["L0-Coder", "L1-Coder"],
                 max_retries_per_tier=1,
             )
 
-        self.assertFalse(result["success"])  # all tiers exhausted
+        self.assertTrue(result["success"])
+        self.assertEqual(result["tier_used"], "L1-Coder")
         self.orchestrator.notifier.send.assert_called()
 
     def test_failure_action_notify_and_wait_confirmed(self):
-        """NOTIFY_AND_WAIT + human confirms: single tier fails → notifier fires,
-        human confirms, loop exits (no more tiers) → total failure.
+        """NOTIFY_AND_WAIT + human confirms: L0 fails → human gate per-tier →
+        confirmed → continues to L1 which succeeds.
 
-        Same reason as above: failure_action check runs post-loop, so a
-        successful subsequent tier skips it.
+        After the fix, the human gate fires per-tier inside the loop.
+        Confirmation allows escalation to continue.
         """
         mock_llm = self.orchestrator.call_llm_with_retry = MagicMock()
         mock_llm.side_effect = [
             {"success": True, "output": "L0 out", "attempt": 1, "duration_seconds": 1},
+            {"success": True, "output": "L1 out", "attempt": 1, "duration_seconds": 1},
+        ]
+
+        verdicts = [
+            Verdict(accepted=False, score=0.3, critique="no",
+                    checks_passed=[], checks_failed=["c"]),
+            Verdict(accepted=True, score=0.9, critique="yes",
+                    checks_passed=["c"], checks_failed=[]),
         ]
 
         with patch("src.core.orchestrator.get_tier_failure_action",
                    return_value=FailureAction.NOTIFY_AND_WAIT), \
              patch("src.core.human_gate.write_pending_file"), \
              patch("src.core.human_gate.wait_for_human", return_value=(True, "")), \
-             patch.object(Judge, "evaluate", return_value=Verdict(
-                 accepted=False, score=0.3, critique="no",
-                 checks_passed=[], checks_failed=["c"],
-             )):
+             patch.object(Judge, "evaluate", side_effect=verdicts):
             result = self.orchestrator.execute_with_judge(
                 task_id="test_wait_confirm",
                 context={"task_spec": "Write code"},
-                tiers=["L0-Coder"],
+                tiers=["L0-Coder", "L1-Coder"],
                 max_retries_per_tier=1,
             )
 
-        self.assertFalse(result["success"])  # confirmed but no more tiers
+        self.assertTrue(result["success"])
+        self.assertEqual(result["tier_used"], "L1-Coder")
         self.orchestrator.notifier.send.assert_called()
 
     def test_failure_action_notify_and_wait_aborted(self):
