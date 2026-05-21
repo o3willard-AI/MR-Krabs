@@ -36,8 +36,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "tiers": {
         "L0": {"models": ["qwen/qwen3.5-397b-a17b"], "max_retries": 3},
-        "L1": {"models": ["x-ai/grok-4.1-fast"], "max_retries": 3},
-        "L2": {"models": ["minimax/minimax-m2.7"], "max_retries": 2},
+        "L1": {"models": ["minimax/minimax-m2.7"], "max_retries": 3},
+        "L2": {"models": ["x-ai/grok-4.1-fast"], "max_retries": 3},
         "L3": {"models": ["anthropic/claude-sonnet-4.6"], "max_retries": 1},
     },
     "circuit_breaker": {

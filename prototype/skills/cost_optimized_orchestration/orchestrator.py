@@ -103,17 +103,6 @@ class CostOptimizedOrchestrator:
         ),
         "L1-Coder": TierConfig(
             name="L1-Coder",
-            model="x-ai/grok-4.1-fast",
-            provider="openrouter",
-            base_url="https://openrouter.ai/api/v1",
-            temperature=0.7,
-            tools=["file_read", "file_write"],
-            env_var="OPENROUTER_API_KEY",
-            cost_per_million_prompt=0.002,
-            cost_per_million_completion=0.006
-        ),
-        "L2-Coder": TierConfig(
-            name="L2-Coder",
             model="minimax/minimax-m2.7",
             provider="openrouter",
             base_url="https://openrouter.ai/api/v1",
@@ -122,6 +111,17 @@ class CostOptimizedOrchestrator:
             env_var="OPENROUTER_API_KEY",
             cost_per_million_prompt=0.0002,
             cost_per_million_completion=0.0006
+        ),
+        "L2-Coder": TierConfig(
+            name="L2-Coder",
+            model="x-ai/grok-4.1-fast",
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            temperature=0.7,
+            tools=["file_read", "file_write"],
+            env_var="OPENROUTER_API_KEY",
+            cost_per_million_prompt=0.002,
+            cost_per_million_completion=0.006
         ),
         "L3-Coder": TierConfig(
             name="L3-Coder",

@@ -46,9 +46,9 @@ Cost is tracked but never blocks execution — it's an observer, not a gatekeepe
 
 | Tier | Model | Provider | Cost | Role |
 |------|-------|----------|------|------|
-| L0-Coder | qwen3-coder-30b | LM Studio (local) | Free | First attempt |
-| L1-Coder | grok-4.3 | OpenRouter | ~$0.008/1K tok | First escalation |
-| L2-Coder | minimax-m2.7 | OpenRouter | ~$0.0008/1K tok | Second escalation |
+| L0-Coder | qwen3.5-397b-a17b | OpenRouter (free) | Free | First attempt |
+| L1-Coder | minimax-m2.7 | OpenRouter | ~$0.0008/1K tok | First escalation |
+| L2-Coder | grok-4.3 | OpenRouter | ~$0.008/1K tok | Second escalation |
 | Principal | *user's own agent* | — | User's subscription | Final fallback |
 
 **L3 is optional.** Users who want a dedicated cloud tier between L2 and Principal can
