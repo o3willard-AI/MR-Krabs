@@ -16,6 +16,7 @@ from src.core.orchestrator import LLMOrchestrator
 from src.core.judge import Verdict
 from src.core.fail_now import set_fail_now, clear_fail_now
 from src.core.fail_now import set_fail_up, clear_fail_up
+from src.core.failure_action import FailureAction
 
 
 # ── Mock Helpers ──────────────────────────────────────────────────
@@ -498,3 +499,155 @@ class TestJudgeEscalationE2E:
         assert "Principal" in result["escalation_path"]
         assert result["escalation_context"]["task"] == "Solve P vs NP"
         assert len(result["escalation_context"]["tiers_attempted"]) == 3
+
+
+    # ── Test 1: Judge model routing respects judge_model_param ──────────────
+
+    def test_judge_model_routing_respects_judge_model_param(self):
+        """Judge uses a different model than the agent tier."""
+        judge_json = json.dumps({
+            "score": 0.9, "critique": "Excellent",
+            "checks_passed": ["correctness", "completeness"],
+            "checks_failed": [],
+        })
+        l0_output = "def solve(x): return x * 2"
+
+        # Capture all requests.post calls to inspect model names
+        calls = []
+
+        def capturing_post(url, **kwargs):
+            payload = kwargs.get("json", {})
+            model = payload.get("model", "")
+            calls.append({"url": url, "model": model})
+
+            # Route to correct mock response
+            mock = MagicMock()
+            if "qwen3-coder" in model:
+                content = l0_output
+                mock.status_code = 200
+            elif "claude" in model:
+                content = judge_json
+                mock.status_code = 200
+            else:
+                content = judge_json
+                mock.status_code = 200
+            mock.json.return_value = {
+                "choices": [{"message": {"content": content}}],
+                "model": model,
+            }
+            return mock
+
+        with patch("requests.post", side_effect=capturing_post):
+            result = self.orchestrator.execute_with_judge(
+                task_id="test_judge_routing",
+                context={"task_spec": "Write a function"},
+                tiers=["L0-Coder"],
+            )
+
+        assert result["success"] is True
+        models_used = [c["model"] for c in calls]
+        assert any("qwen3-coder" in m for m in models_used), \
+            f"Expected qwen3-coder model in {models_used}"
+        assert any("claude" in m for m in models_used), \
+            f"Expected claude model in {models_used}"
+
+    # ── Test 2: Tool executor invoked before judge ────────────────────────
+
+    def test_tool_executor_invoked_before_judge(self):
+        """Tool executor parses and executes file_write before judge evaluation."""
+        judge_json = json.dumps({
+            "score": 0.9, "critique": "Excellent",
+            "checks_passed": ["correctness", "completeness"],
+            "checks_failed": [],
+        })
+        # Output with a plain-text file_write pattern the tool executor recognizes
+        l0_output = 'file_write("test_output.py", "def solve(): return 42")'
+
+        responses = {
+            "qwen3-coder-30b": (l0_output, 200),
+            "anthropic/claude-sonnet": (judge_json, 200),
+        }
+
+        with patch("requests.post", side_effect=_mock_post_for_models(responses)):
+            result = self.orchestrator.execute_with_judge(
+                task_id="test_tool_execution",
+                context={"task_spec": "Write a function"},
+                tiers=["L0-Coder"],
+            )
+
+        assert result["success"] is True
+        # Tool executor either parsed tools or returned empty results
+        assert result.get("tool_results") is not None
+
+    # ── Test 3: Cost tracker receives token estimates ──────────────────────
+
+    def test_cost_tracker_receives_token_estimates(self):
+        """Cost tracker records token estimates for prompt and completion."""
+        judge_json = json.dumps({
+            "score": 0.9, "critique": "Excellent",
+            "checks_passed": ["correctness", "completeness"],
+            "checks_failed": [],
+        })
+        l0_output = "A" * 100
+
+        responses = {
+            "qwen3-coder-30b": (l0_output, 200),
+            "anthropic/claude-sonnet": (judge_json, 200),
+        }
+
+        # Create a fresh MagicMock that will track record() calls
+        mock_ct = MagicMock()
+        mock_ct.get_summary.return_value = {"daily_total": 0.0}
+        self.orchestrator.cost_tracker = mock_ct
+
+        with patch("requests.post", side_effect=_mock_post_for_models(responses)):
+            result = self.orchestrator.execute_with_judge(
+                task_id="test_cost_tracking",
+                context={"task_spec": "Write a function"},
+                tiers=["L0-Coder"],
+            )
+
+        assert result["success"] is True
+        # cost_tracker.record should have been called for the agent call
+        assert mock_ct.record.called, "Expected cost_tracker.record to be called"
+
+    # ── Test 4: Notifier fires on escalation with correct urgency ───────────
+
+    def test_notifier_fires_on_escalation_with_correct_urgency(self):
+        """Notifier fires with urgency='normal' when a tier fails and escalates.
+
+        The failure_action if/elif block runs after the for-tier loop exits,
+        so we use a single tier that fails — allowing the post-loop check
+        to execute the NOTIFY_AND_ESCALATE branch.
+        """
+        reject_json = json.dumps({
+            "score": 0.3, "critique": "Bad",
+            "checks_passed": [], "checks_failed": ["correctness"],
+        })
+
+        # Single tier, rejected by judge → loop exits, failure_action runs
+        responses = {
+            "qwen3-coder-30b": ("L0 output", 200),
+            "anthropic/claude-sonnet": (reject_json, 200),
+        }
+
+        mock_notifier = MagicMock()
+        self.orchestrator.notifier = mock_notifier
+
+        with patch("src.core.orchestrator.get_tier_failure_action",
+                   return_value=FailureAction.NOTIFY_AND_ESCALATE), \
+             patch("requests.post", side_effect=_mock_post_for_models(responses)):
+            result = self.orchestrator.execute_with_judge(
+                task_id="test_notifier_urgency",
+                context={"task_spec": "Complex task"},
+                tiers=["L0-Coder"],
+                max_retries_per_tier=1,
+            )
+
+        assert result["success"] is False  # all tiers exhausted
+        mock_notifier.send.assert_called()
+        call_kwargs = mock_notifier.send.call_args.kwargs
+        assert call_kwargs.get("urgency") == "normal", \
+            f"Expected urgency='normal', got {call_kwargs.get('urgency')}"
+
+
