@@ -30,6 +30,7 @@ class TaskSpec:
 
     task_id: str
     context: dict
+    task_type: str = "code"  # "code" | "plan" — determines prompt + judge criteria
     tiers: Optional[list[str]] = None
     max_retries_per_tier: int = 3
     judge_model: str = "Judge"
@@ -40,6 +41,7 @@ class TaskSpec:
         kwargs = {
             "task_id": self.task_id,
             "context": self.context,
+            "task_type": self.task_type,
             "max_retries_per_tier": self.max_retries_per_tier,
             "judge_model": self.judge_model,
             "timeout_seconds": self.timeout_seconds,

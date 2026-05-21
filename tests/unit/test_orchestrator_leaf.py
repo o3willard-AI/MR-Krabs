@@ -133,17 +133,17 @@ class TestOrchestratorLeafMethods(unittest.TestCase):
     def test_get_agent_system_prompt_template_exists(self):
         template_dir = self.project_root / "docs" / "workflow" / "templates"
         template_dir.mkdir(parents=True, exist_ok=True)
-        template_path = template_dir / "agent-system-prompt.md"
+        template_path = template_dir / "code-system-prompt.md"
         template_path.write_text("You are an expert developer. Use tools.")
 
         # Re-create orchestrator so it picks up the template
         orch = LLMOrchestrator(project_root=str(self.project_root))
-        result = orch._get_agent_system_prompt()
+        result = orch._get_agent_system_prompt("code")
         self.assertEqual(result, "You are an expert developer. Use tools.")
 
     def test_get_agent_system_prompt_fallback(self):
-        # No template file exists in temp dir (only docs/workflow/templates/ was created)
-        result = self.orchestrator._get_agent_system_prompt()
+        # No template file exists in temp dir
+        result = self.orchestrator._get_agent_system_prompt("code")
         self.assertIn("file_read", result)
         self.assertIn("file_write", result)
 

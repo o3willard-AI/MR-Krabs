@@ -175,7 +175,11 @@ class TestConcurrentTaskFlood(unittest.TestCase):
                            "No tasks succeeded under concurrent load")
 
     def test_independent_orchestrators_thread_safety(self):
-        """Each task gets its own orchestrator — the safe pattern."""
+        """Each task gets its own orchestrator — the safe pattern.
+
+        Uses setUp-level Judge mock to avoid patch.object thread-safety
+        issues with concurrent context-manager entry.
+        """
         errors = []
         results = []
 
@@ -183,21 +187,22 @@ class TestConcurrentTaskFlood(unittest.TestCase):
             try:
                 orch = _fresh_orchestrator()
                 orch.call_llm_with_retry = MagicMock(return_value=_mock_llm_success())
-                with patch.object(Judge, "evaluate", return_value=_accept_verdict()):
-                    r = orch.execute_with_judge(
-                        task_id=task_id,
-                        context={"task_spec": f"Task {task_id}"},
-                        tiers=["L0-Coder"],
-                        max_retries_per_tier=1,
-                    )
-                    results.append((task_id, r["success"], r["tier_used"]))
+                r = orch.execute_with_judge(
+                    task_id=task_id,
+                    context={"task_spec": f"Task {task_id}"},
+                    tiers=["L0-Coder"],
+                    max_retries_per_tier=1,
+                )
+                results.append((task_id, r["success"], r["tier_used"]))
             except Exception as e:
                 errors.append((task_id, str(e)))
 
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = [executor.submit(run_task, f"task-{i}") for i in range(10)]
-            for f in as_completed(futures):
-                f.result(timeout=15)
+        # Patch Judge.evaluate BEFORE spawning threads to avoid races
+        with patch.object(Judge, "evaluate", return_value=_accept_verdict()):
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(run_task, f"task-{i}") for i in range(10)]
+                for f in as_completed(futures):
+                    f.result(timeout=15)
 
         self.assertEqual(len(errors), 0)
         successes = [r for r in results if r[1]]

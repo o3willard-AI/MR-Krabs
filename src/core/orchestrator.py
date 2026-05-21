@@ -239,7 +239,7 @@ class ToolExecutor:
 class LLMOrchestrator:
     """Orchestrates multi-tier LLM workflow."""
 
-    def __init__(self, project_root: str = str(Path(__file__).parent.parent.parent.parent)):
+    def __init__(self, project_root: str = str(Path(__file__).parent.parent.parent)):
         self.project_root = Path(project_root)
         self.workflow_dir = self.project_root / "docs" / "workflow"
         self.tasks_dir = self.project_root / "docs" / "tasks"
@@ -506,12 +506,13 @@ class LLMOrchestrator:
 
         return response.json()["choices"][0]["message"]["content"]
 
-    def _get_agent_system_prompt(self) -> str:
-        """Load the agent system prompt template for coding tasks.
-        
+    def _get_agent_system_prompt(self, task_type: str = "code") -> str:
+        """Load the agent system prompt template for the task type.
+
+        Loads docs/workflow/templates/{task_type}-system-prompt.md.
         Falls back to a concise inline prompt if the template file is missing.
         """
-        template_path = self.workflow_dir / "templates" / "agent-system-prompt.md"
+        template_path = self.workflow_dir / "templates" / f"{task_type}-system-prompt.md"
         if template_path.exists():
             return template_path.read_text()
         # Fallback: minimal but functional prompt
@@ -519,7 +520,7 @@ class LLMOrchestrator:
             "You are an expert software developer.\n"
             "Use file_read(\"path\") and file_write(\"path\", \"\"\"content\"\"\") tools.\n"
             "Read before writing, match existing conventions, write complete code.\n"
-            "If ambiguous, ask. Handle edge cases. Verify your changes work."
+            "If ambiguous, ask. Handle edge cases. Verify your changes work.\n"
         )
 
     def _build_system_prompt(self, tier: str, template: str) -> str:
@@ -687,12 +688,17 @@ class LLMOrchestrator:
         self,
         task_id: str,
         context: dict[str, Any],
+        task_type: str = "code",
         tiers: list[str] | None = None,
         max_retries_per_tier: int = 3,
         judge_model: str = "Judge",
         timeout_seconds: float = 300,
     ) -> dict[str, Any]:
         """Execute a task using Judge-based retry/escalation logic.
+
+        Args:
+            task_type: "code" or "plan" — determines which agent system
+                prompt template and judge evaluation criteria to use.
 
         For each tier, calls the LLM up to max_retries_per_tier times.
         After each call, a Judge (LLM-powered) evaluates the output quality.
@@ -709,7 +715,7 @@ class LLMOrchestrator:
             duration_seconds, tool_results
         """
         # Load the agent system prompt once (used across all tiers and fail-now)
-        agent_system_prompt = self._get_agent_system_prompt()
+        agent_system_prompt = self._get_agent_system_prompt(task_type)
 
         # Check for fail-now signal
         fail_now_tier = get_fail_now()
