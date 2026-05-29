@@ -2,7 +2,7 @@
 """Model configuration — shared MODELS dict used by orchestrator and judge.
 
 Best Practice: The Judge model should ALWAYS be a reasoning-specialized LLM.
-Reasoning models (Claude Opus, Sonnet, GPT-4, o1) produce more calibrated
+Reasoning models (Claude Opus, DeepSeek R1, o1, o3) produce more calibrated
 scores, more actionable critiques, and fewer hallucinated JSON responses
 than general-purpose or small models. Never use a small local model for
 judging — the Judge is the quality gate for the entire pipeline; its
@@ -20,7 +20,7 @@ MODELS = {
     # Always a reasoning model — never a small/cheap tier agent.
     "Judge": {
         "provider": "openrouter",
-        "model": "anthropic/claude-sonnet-4.6",
+        "model": "deepseek/deepseek-r1",
         "env_var": "OPENROUTER_API_KEY",
         "base_url": OPENROUTER_BASE_URL,
         "temperature": 0.1,
@@ -36,42 +36,49 @@ MODELS = {
     # By default L3 is unused — escalation jumps from L2 directly to Principal.
     "L0-Planner": {
         "provider": "openrouter",
-        "model": "qwen/qwen3.5-397b-a17b",
+        "model": "google/gemini-2.5-pro",
         "env_var": "OPENROUTER_API_KEY",
         "base_url": OPENROUTER_BASE_URL,
         "temperature": 0.3,
-        "tools": ["file_read"],
+        "tools": ["file_read", "file_write"],
+        "role": "planner",
+        "max_tokens": 32768,
     },
     "L0-Reviewer": {
         "provider": "openrouter",
-        "model": "qwen/qwen3.5-397b-a17b",
+        "model": "google/gemini-2.5-flash",
         "env_var": "OPENROUTER_API_KEY",
         "base_url": OPENROUTER_BASE_URL,
         "temperature": 0.3,
         "tools": ["file_read"],
+        "role": "reviewer",
     },
     "L0-Coder": {
-        "provider": "lmstudio",
-        "model": "qwen/qwen3-coder-30b",
-        "base_url": LM_STUDIO_BASE_URL,
-        "temperature": 0.7,
-        "tools": ["file_read", "file_write"],
-    },
-    "L1-Coder": {
         "provider": "openrouter",
         "model": "x-ai/grok-4.3",
         "env_var": "OPENROUTER_API_KEY",
         "base_url": OPENROUTER_BASE_URL,
-        "temperature": 0.7,
-        "tools": ["file_read", "file_write"],
+        "temperature": 0.0,
+        "tools": ["file_write", "file_read"],
+        "role": "coder",
+    },
+    "L1-Coder": {
+        "provider": "openrouter",
+        "model": "google/gemini-2.5-flash",
+        "env_var": "OPENROUTER_API_KEY",
+        "base_url": OPENROUTER_BASE_URL,
+        "temperature": 0.0,
+        "tools": ["file_write", "file_read"],
+        "role": "coder",
     },
     "L2-Coder": {
         "provider": "openrouter",
-        "model": "minimax/minimax-m2.7",
+        "model": "anthropic/claude-haiku-4.5",
         "env_var": "OPENROUTER_API_KEY",
         "base_url": OPENROUTER_BASE_URL,
-        "temperature": 0.7,
-        "tools": ["file_read", "file_write"],
+        "temperature": 0.0,
+        "tools": ["file_write", "file_read"],
+        "role": "coder",
     },
     # ── Principal Agent (top-level escalation) ─────────────────────
     # The Principal Agent is the user's own agent — Hermes, Claude Code,
@@ -84,6 +91,62 @@ MODELS = {
     # and returns a structured escalation result instead of calling an LLM.
     "Principal": {
         "role": "principal",
+    },
+    # ── Local LM Studio models (12-16 GB GPU target) ─────────────
+    # Small local models for budget-conscious coding. Each references
+    # a ModelProfile in model_profiles.py for automated prompt enrichment
+    # and judge-known-failure injection.
+    # NOTE: Deepseek Coder V2 Lite (2.4B active, .17) was evaluated and
+    # REJECTED — 12-0 sweep loss to Sushi across planner/orch/judge roles,
+    # dangerously lenient judge calibration (0.9 for race conditions).
+    "L0-Sushi": {
+        "provider": "lmstudio",
+        "model": "qwen3.5-9b-sushi-coder-rl",
+        "env_var": "LM_STUDIO_URL",
+        "base_url": "http://192.168.101.17:1234/v1",
+        "temperature": 0.0,
+        "tools": ["file_write", "file_read"],
+        "role": "coder",
+        "max_tokens": 4096,
+        "profile": "sushi-9b",
+        # LIMITATION: Cannot sustain multi-file builds — 394 lines max,
+        # sub-75 lines/file. Viable as planner/orch/judge but not builder.
+        # For build workloads, escalate to cloud tiers or Principal.
+    },
+    "L0-Sushi-Planner": {
+        "provider": "lmstudio",
+        "model": "qwen3.5-9b-sushi-coder-rl",
+        "env_var": "LM_STUDIO_URL",
+        "base_url": "http://192.168.101.17:1234/v1",
+        "temperature": 0.0,
+        "tools": ["file_read"],
+        "role": "planner",
+        "max_tokens": 4096,
+        "profile": "sushi-9b",
+    },
+    "L0-Sushi-Judge": {
+        "provider": "lmstudio",
+        "model": "qwen3.5-9b-sushi-coder-rl",
+        "env_var": "LM_STUDIO_URL",
+        "base_url": "http://192.168.101.17:1234/v1",
+        "temperature": 0.0,
+        "tools": [],
+        "role": "judge",
+        "max_tokens": 2048,
+        "profile": "sushi-9b",
+        # Well-calibrated: 0.95 for correct code, 0.1 for SQL injection.
+        # Prefer over small-model judges that are too lenient.
+    },
+    "L0-GPTOSS": {
+        "provider": "lmstudio",
+        "model": "gpt-oss-20b-claude-opus-sonnet-reasoning-i1",
+        "env_var": "LM_STUDIO_URL",
+        "base_url": "http://192.168.101.17:1234/v1",
+        "temperature": 0.0,
+        "tools": ["file_write", "file_read"],
+        "role": "planner",
+        "max_tokens": 8192,
+        "profile": "gpt-oss-20b",
     },
     # ── Optional cloud tiers (insert before Principal) ────────────
     # Available but NOT in default escalation path.
