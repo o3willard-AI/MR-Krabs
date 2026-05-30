@@ -1,0 +1,159 @@
+:root {
+    --background-color: #1a1a2e;
+    --surface-color: #16213e;
+    --primary-color: #0f3460;
+    --secondary-color: #e94560;
+    --text-color: #e0e0e0;
+    --text-color-light: #b0b0b0;
+    --border-color: #0f3460;
+    --hover-color: #0c2a4d;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: var(--background-color);
+    color: var(--text-color);
+    font-size: 18px; /* Base font size for larger touch targets */
+    line-height: 1.5;
+    height: 100%;
+    overflow: hidden; /* Prevent scrollbars on main body */
+}
+
+.container {
+    display: flex;
+    height: 100vh; /* Full viewport height */
+}
+
+.sidebar {
+    width: 250px;
+    background-color: var(--surface-color);
+    padding: 1.5rem 1rem;
+    box-shadow: 2px 0 5px rgba(0, 0, 0, 0.2);
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0; /* Prevent sidebar from shrinking */
+}
+
+.sidebar-header {
+    margin-bottom: 2rem;
+    text-align: center;
+}
+
+.sidebar-header h2 {
+    color: var(--secondary-color);
+    font-size: 1.8rem;
+    margin: 0;
+}
+
+.sidebar-nav ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.sidebar-nav li {
+    margin-bottom: 0.5rem;
+}
+
+.sidebar-nav .nav-link {
+    display: block;
+    padding: 0.8rem 1rem;
+    color: var(--text-color-light);
+    text-decoration: none;
+    border-radius: 0.5rem;
+    transition: background-color 0.2s ease, color 0.2s ease;
+    min-height: 48px; /* Large touch target */
+    display: flex;
+    align-items: center;
+}
+
+.sidebar-nav .nav-link:hover,
+.sidebar-nav .nav-link.active {
+    background-color: var(--primary-color);
+    color: var(--text-color);
+}
+
+.content {
+    flex-grow: 1;
+    padding: 2rem;
+    overflow-y: auto; /* Allow content to scroll if it overflows */
+}
+
+h1, h2, h3, h4, h5, h6 {
+    color: var(--secondary-color);
+    margin-top: 0;
+    margin-bottom: 1rem;
+}
+
+p {
+    margin-bottom: 1rem;
+}
+
+/* Ensure all interactive elements have large touch targets */
+button, input[type="submit"], input[type="button"], .button {
+    min-width: 48px;
+    min-height: 48px;
+    padding: 0.8rem 1.2rem;
+    border: none;
+    border-radius: 0.5rem;
+    background-color: var(--primary-color);
+    color: var(--text-color);
+    font-size: 1rem;
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    text-decoration: none; /* For button-like links */
+}
+
+button:hover, input[type="submit"]:hover, input[type="button"]:hover, .button:hover {
+    background-color: var(--hover-color);
+}
+
+a:not(.nav-link):not(.button) { /* General links, excluding nav and button-like */
+    color: var(--secondary-color);
+    text-decoration: none;
+    min-height: 48px; /* Ensure even inline links have a minimum clickable area */
+    display: inline-flex;
+    align-items: center;
+    padding: 0 0.2rem; /* Small padding to make clickable area more visible */
+}
+
+a:not(.nav-link):not(.button):hover {
+    text-decoration: underline;
+}
+
+/* Form elements for future use */
+input[type="text"],
+input[type="password"],
+input[type="email"],
+input[type="number"],
+textarea,
+select {
+    width: 100%;
+    padding: 0.8rem;
+    margin-bottom: 1rem;
+    border: 1px solid var(--border-color);
+    border-radius: 0.5rem;
+    background-color: var(--surface-color);
+    color: var(--text-color);
+    font-size: 1rem;
+    box-sizing: border-box; /* Include padding and border in the element's total width and height */
+    min-height: 48px; /* Large touch target */
+}
+
+input[type="text"]::placeholder,
+textarea::placeholder {
+    color: var(--text-color-light);
+}
+
+input[type="text"]:focus,
+textarea:focus,
+select:focus {
+    outline: none;
+    border-color: var(--secondary-color);
+    box-shadow: 0 0 0 2px rgba(233, 69, 96, 0.5);
+}

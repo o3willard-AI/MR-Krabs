@@ -57,3 +57,5 @@ Numbered phases, each containing:
 - Are phases ordered correctly (no dependency violations)?
 - Can each phase be implemented independently and tested?
 - Is the total complexity estimate realistic?
+
+After writing the complete plan, output DONE on its own line to signal completion.

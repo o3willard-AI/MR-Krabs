@@ -39,7 +39,7 @@ MODELS = {
         "model": "google/gemini-2.5-pro",
         "env_var": "OPENROUTER_API_KEY",
         "base_url": OPENROUTER_BASE_URL,
-        "temperature": 0.3,
+        "temperature": 0.0,
         "tools": ["file_read", "file_write"],
         "role": "planner",
         "max_tokens": 32768,

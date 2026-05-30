@@ -124,8 +124,9 @@ class CostTracker:
         },
     }
 
-    def __init__(self, budget: Budget | None = None):
+    def __init__(self, budget: Budget | None = None, cost_calculator=None):
         self.budget = budget or Budget()
+        self.cost_calculator = cost_calculator  # Phase 5 — adapter-based pricing
         self.entries: list[CostEntry] = []
         self.daily_total = Decimal("0.00")
         self.reserved_total = Decimal("0.00")
@@ -196,7 +197,20 @@ class CostTracker:
                     self.alert_handler.handle_warning("emergency", self)
 
     def calculate_cost(self, model: str, tokens: TokenCount) -> Decimal:
-        """Calculate cost for given tokens and model using Decimal arithmetic."""
+        """Calculate cost for given tokens and model using Decimal arithmetic.
+
+        Phase 5: prefers adapter-based CostCalculator when available,
+        falls back to hardcoded MODEL_COSTS dict.
+        """
+        # Try adapter-based pricing first (Phase 5)
+        if self.cost_calculator:
+            pricing = self.cost_calculator.get_pricing(model)
+            if pricing:
+                prompt_cost = (Decimal(tokens.prompt_tokens) / Decimal("1000")) * pricing.input_per_1k
+                completion_cost = (Decimal(tokens.completion_tokens) / Decimal("1000")) * pricing.output_per_1k
+                return prompt_cost + completion_cost
+
+        # Fallback: hardcoded MODEL_COSTS
         pricing = self.MODEL_COSTS.get(
             model, {"prompt": Decimal("0.000001"), "completion": Decimal("0.000001")}
         )

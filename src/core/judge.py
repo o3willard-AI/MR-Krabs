@@ -21,7 +21,8 @@ import requests
 
 from src.core.constants import JUDGE_MAX_TOKENS, OPENROUTER_REFERER
 from src.core.model_config import MODELS
-from src.core.judge_criteria import CODE_CRITERIA, QA_CRITERIA, detect_task_type
+from src.core.judge_criteria import CODE_CRITERIA, QA_CRITERIA, PLAN_CRITERIA, detect_task_type
+from src.core.model_profiles import get_known_failures, KnownFailure
 
 
 @dataclass
@@ -77,15 +78,13 @@ class Judge:
         """Set a custom prompt template."""
         self._prompt_template = value
     
-    def evaluate(self, task: str, output: str) -> Verdict:
+    def evaluate(self, task: str, output: str, model_profile_key: Optional[str] = None) -> Verdict:
         """Evaluate code/text output against the specified task.
         
         Args:
             task: The original task description
             output: The output to evaluate
-            
-        Returns:
-            Verdict object with evaluation results
+            model_profile_key: Optional model profile key for known-failure injection
         """
         # Truncate output if it's too long (8000 chars max before sending to judge)
         if len(output) > 8000:
@@ -94,7 +93,12 @@ class Judge:
         # Determine task type for criteria selection
         if self.criteria is None:
             task_type = detect_task_type(task)
-            criteria = CODE_CRITERIA if task_type == "code" else QA_CRITERIA
+            if task_type == "plan":
+                criteria = PLAN_CRITERIA
+            elif task_type == "code":
+                criteria = CODE_CRITERIA
+            else:
+                criteria = QA_CRITERIA
         else:
             criteria = self.criteria
         
@@ -168,6 +172,23 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
         else:
             # Default template — uses .replace() so only {criteria_list} is replaced
             prompt = prompt_template.replace('{criteria_list}', criteria_list)
+            # ── Known failure patterns ─────────────────────────────────
+            if model_profile_key:
+                known = get_known_failures(model_profile_key)
+                if known:
+                    failure_lines = [
+                        "\n\n## Known Failure Patterns for This Model\n\n",
+                        "The model that produced this output has known recurring issues.\n",
+                        "Check specifically for these and mention them by name if found:\n\n",
+                    ]
+                    for kf in known:
+                        icon = {"error": "🔴", "warning": "🟡", "info": "🔵"}.get(kf.severity, "⚪")
+                        failure_lines.append(
+                            f"- {icon} **{kf.trigger_pattern()}**: {kf.feedback}\n"
+                        )
+                    prompt += "".join(failure_lines)
+            # Inject the actual task and output (not in template placeholders)
+            prompt += f"\n\n## Task to Evaluate\n\n{task}\n\n## Output to Evaluate\n\n{output}"
         
         # Prepare the messages for LLM call
         messages = [
@@ -228,10 +249,62 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
                     checks_failed=["judge_unavailable"]
                 )
             # First, try to extract JSON from the response if it's not directly valid JSON
-            json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+            # Strip markdown code fences first
+            json_str = raw_response.strip()
+            fence_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', json_str, re.DOTALL)
+            if fence_match:
+                json_str = fence_match.group(1).strip()
+            
+            json_match = re.search(r'\{.*\}', json_str, re.DOTALL)
             if json_match:
                 json_str = json_match.group(0)
-                data = json.loads(json_str)
+                try:
+                    data = json.loads(json_str)
+                except (json.JSONDecodeError, ValueError):
+                    # Retry: strip code fences and try again
+                    stripped = json_str.strip()
+                    if stripped.startswith('```'):
+                        stripped = re.sub(r'^```(?:json)?\s*\n', '', stripped)
+                        stripped = re.sub(r'\n```\s*$', '', stripped)
+                        try:
+                            data = json.loads(stripped)
+                        except (json.JSONDecodeError, ValueError):
+                            # Final attempt: try reparative parsing
+                            # Common failure: literal newlines in JSON string values,
+                            # or LLM outputs Python dict syntax instead of JSON
+                            repaired = re.sub(
+                                r'"([^"\\]*(?:\\.[^"\\]*)*)"',
+                                lambda m: '"' + m.group(1).replace('\n', '\\n').replace('\t', '\\t') + '"',
+                                stripped
+                            )
+                            # Also fix single-quoted Python dicts (replace ' with ")
+                            if repaired.startswith('{') and "'" in repaired[:50]:
+                                repaired = re.sub(r"'([^']*)'", r'"\1"', repaired)
+                            try:
+                                data = json.loads(repaired)
+                            except (json.JSONDecodeError, ValueError):
+                                return Verdict(
+                                    accepted=False, score=0.0,
+                                    critique=f"Malformed JSON from judge: {stripped[:300]}",
+                                    checks_passed=[], checks_failed=["json_parse_error"]
+                                )
+                    else:
+                        # Try reparative parsing on the original
+                        repaired = re.sub(
+                            r'"([^"\\]*(?:\\.[^"\\]*)*)"',
+                            lambda m: '"' + m.group(1).replace('\n', '\\n').replace('\t', '\\t') + '"',
+                            json_str
+                        )
+                        if repaired.startswith('{') and "'" in repaired[:50]:
+                            repaired = re.sub(r"'([^']*)'", r'"\1"', repaired)
+                        try:
+                            data = json.loads(repaired)
+                        except (json.JSONDecodeError, ValueError):
+                            return Verdict(
+                                accepted=False, score=0.0,
+                                critique=f"Malformed JSON from judge: {json_str[:300]}",
+                                checks_passed=[], checks_failed=["json_parse_error"]
+                            )
             else:
                 # If no JSON found, treat the whole response as critique
                 data = {

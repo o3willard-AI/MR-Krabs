@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import Any
 import warnings
 
-import requests
-
 from src.core.circuit_breaker import CircuitBreakerRegistry
 from src.core.cost import CostTracker, TokenCount
 from src.core.judge import Judge, Verdict
@@ -20,6 +18,7 @@ from src.core.failure_action import FailureAction
 from src.core.tier_config import get_tier_failure_action, get_tier_max_retries
 from src.core.fail_now import get_fail_now, clear_fail_now, is_fail_now_active, check_mesh_fail_now
 from src.core.fail_now import is_fail_up_active, clear_fail_up, check_mesh_fail_up
+from src.core.model_profiles import get_prepend, get_known_failures
 
 # Configuration
 MAX_RETRIES = 3
@@ -250,6 +249,33 @@ class LLMOrchestrator:
         self.cost_tracker = CostTracker()
         self.circuit_breaker_registry = CircuitBreakerRegistry()
         
+        # Initialize provider adapter router (Phase 2 — LiteLLM adapter wiring)
+        from src.adapters.provider_router import ProviderRouter
+        self.provider_router = ProviderRouter()
+        
+        # Caching middleware (Phase 3) — LRU cache for LLM responses
+        from src.adapters.cache import CachingAdapter
+        self.cache = CachingAdapter(config={
+            "max_entries": 1000,
+            "default_ttl_seconds": 3600,
+            "enabled": True,
+        })
+        
+        # Rate limiter (Phase 4) — exponential backoff with jitter
+        from src.adapters.rate_limit import RateLimitHandler, RateLimitConfig
+        self.rate_limiter = RateLimitHandler(config=RateLimitConfig(
+            max_retries=MAX_RETRIES,
+            base_delay_s=RETRY_DELAY,
+            max_delay_s=60.0,
+            jitter_factor=0.25,
+        ))
+        
+        # Unified cost calculator (Phase 5)
+        from src.adapters.cost_calculator import CostCalculator
+        self.cost_calculator = CostCalculator()
+        # Replace CostTracker's hardcoded pricing with adapter
+        self.cost_tracker.cost_calculator = self.cost_calculator
+        
         # Initialize notifier
         from src.core.notify import FallbackNotifier, MeshNotifier, TelegramNotifier
         self.notifier = FallbackNotifier(
@@ -312,8 +338,11 @@ class LLMOrchestrator:
                 last_error = str(e)
                 print(f"  Attempt {attempt + 1}/{MAX_RETRIES} failed: {last_error}")
                 if attempt < MAX_RETRIES - 1:
-                    print(f"  Retrying in {RETRY_DELAY}s with simplified context...")
-                    time.sleep(RETRY_DELAY)
+                    delay = self.rate_limiter.get_backoff_delay(
+                        tier, retry_count=attempt
+                    )
+                    print(f"  Retrying in {delay:.1f}s with simplified context...")
+                    time.sleep(delay)
 
         return {
             "success": False,
@@ -426,85 +455,58 @@ class LLMOrchestrator:
         return "\n".join(result)
 
     def call_llm(
-        self, tier: str, system_prompt: str, user_prompt: str, temperature: float = 0.7
+        self, tier: str, system_prompt: str, user_prompt: str, temperature: float
     ) -> str:
-        """Call the appropriate LLM for the specified tier."""
-        config = MODELS.get(tier)
-        if not config:
-            raise ValueError(f"Unknown tier: {tier}")
+        """Call LLM through provider adapter framework (Phase 2 — adapter wiring).
 
-        provider = config.get("provider")
-        model = config.get("model")
-        base_url = config.get("base_url")
-        api_key = self.get_api_key(tier)
+        Replaces the old _call_openrouter / _call_lmstudio raw-requests path.
+        Phase 3: checks LRU cache before calling adapter.
+        Returns the response content string directly.
+        """
+        import hashlib, json
 
-        if not model or not base_url:
-            raise ValueError(f"Invalid configuration for tier {tier}")
+        # Phase 3: cache check
+        cache_key = hashlib.sha256(
+            json.dumps({
+                "tier": tier,
+                "system": system_prompt[:500],
+                "user": user_prompt[:500],
+                "temp": temperature,
+            }, sort_keys=True).encode()
+        ).hexdigest()
+
+        if self.cache.enabled:
+            cached = self.cache._store.get(cache_key)
+            if cached:
+                return cached["content"]
+
+        adapter = self.provider_router.get_adapter(tier)
+        if adapter is None:
+            raise ValueError(f"No adapter for tier: {tier}")
 
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 
-        if provider == "openrouter":
-            return self._call_openrouter(base_url, model, api_key, messages, temperature)
-        elif provider == "lmstudio":
-            return self._call_lmstudio(base_url, model, messages, temperature)
-        else:
-            raise ValueError(f"Unknown provider: {provider}")
+        try:
+            # Read max_tokens from tier config, default to 4096
+            tier_cfg = self.provider_router._tiers.get(tier, {})
+            max_tok = tier_cfg.get("max_tokens", 4096)
+            response = adapter.call_sync(messages, temperature=temperature, max_tokens=max_tok)
+            content = response.content
 
-    def _call_openrouter(
-        self,
-        base_url: str,
-        model: str,
-        api_key: str | None,
-        messages: list[dict],
-        temperature: float,
-    ) -> str:
-        """Call OpenRouter API."""
-        if not api_key:
-            raise ValueError("OPENROUTER_API_KEY not set")
+            # Phase 3: store in cache
+            if self.cache.enabled:
+                self.cache._store.set(cache_key, {"content": content})
 
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/pairadmin/orchestrator",
-            "X-Title": "Multi-Tier Orchestrator",
-        }
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": 8192,
-        }
+            return content
+        except Exception as e:
+            raise Exception(f"Adapter call failed for tier {tier}: {e}")
 
-        response = requests.post(
-            f"{base_url}/chat/completions", headers=headers, json=payload, timeout=300
-        )
-        if response.status_code != 200:
-            raise Exception(f"OpenRouter API error: {response.status_code} - {response.text}")
-
-        return response.json()["choices"][0]["message"]["content"]
-
-    def _call_lmstudio(
-        self, base_url: str, model: str, messages: list[dict], temperature: float
-    ) -> str:
-        """Call LM Studio API."""
-        headers = {"Content-Type": "application/json"}
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": 8192,
-        }
-
-        response = requests.post(
-            f"{base_url}/chat/completions", headers=headers, json=payload, timeout=300
-        )
-        if response.status_code != 200:
-            raise Exception(f"LM Studio API error: {response.status_code} - {response.text}")
-
-        return response.json()["choices"][0]["message"]["content"]
+    # Legacy raw-HTTP callers removed (Phase 2 — adapter wiring).
+    # _call_openrouter and _call_lmstudio replaced by ProviderRouter +
+    # OpenAICompatibleAdapter.  See src/adapters/providers/base_provider.py.
 
     def _get_agent_system_prompt(self, task_type: str = "code") -> str:
         """Load the agent system prompt template for the task type.
@@ -834,6 +836,14 @@ class LLMOrchestrator:
                     break  # exit retry loop, go to next tier
 
                 user_prompt = context.get("task_spec", task_id)
+
+                # ── Model profile: inject prepend prompt ──────────────
+                model_key = tier_config.get("profile")
+                if model_key:
+                    prepend = get_prepend(model_key)
+                    if prepend:
+                        user_prompt = f"{prepend}\n\n{user_prompt}"
+
                 if feedback:
                     user_prompt = (
                         f"{user_prompt}\n\n## Previous Attempt Feedback\n\n"
@@ -861,8 +871,26 @@ class LLMOrchestrator:
                 # --- Judge evaluation ---
                 try:
                     task_text = context.get("task_spec", task_id)
+                    # For plan tasks, prepend a planning indicator so detect_task_type
+                    # correctly routes to PLAN_CRITERIA instead of CODE_CRITERIA
+                    if task_type == "plan":
+                        task_text = f"[PLANNING TASK] Decompose into subtasks: {task_text}"
+                    
+                    # Build evaluation output: include tool execution results
+                    eval_output = result["output"]
+                    if tool_result.get("results"):
+                        import json as _json
+                        eval_output += "\n\n## Tool Execution Results\n" + _json.dumps(tool_result["results"], indent=2)
+                    
                     judge = Judge(model=judge_model)
-                    verdict = judge.evaluate(task=str(task_text), output=result["output"])
+                    eval_kwargs = {
+                        "task": str(task_text),
+                        "output": eval_output,
+                    }
+                    profile_key = tier_config.get("profile")
+                    if profile_key:
+                        eval_kwargs["model_profile_key"] = profile_key
+                    verdict = judge.evaluate(**eval_kwargs)
                 except Exception as e:
                     # Judge unavailable — degrade gracefully, treat as rejection
                     verdict = Verdict(

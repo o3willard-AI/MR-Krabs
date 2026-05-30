@@ -17,6 +17,8 @@ one with a separate file_write call. Include:
 - Docstrings for public functions/classes
 - Edge case handling
 
+After writing all files, output DONE on its own line to signal completion.
+
 ## Conventions
 - Match existing code style (indentation, naming, patterns)
 - Prefer standard library over external dependencies

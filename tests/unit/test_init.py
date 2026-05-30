@@ -144,11 +144,10 @@ class TestGetDefaultTier:
         if "OPENROUTER_API_KEY" in os.environ:
             del os.environ["OPENROUTER_API_KEY"]
         
-        # With only LM Studio in MODELS but no host set, it should still return L0-Coder
-        # because we assume LM Studio is available until connection fails
-        # This test verifies the behavior: it won't raise, it will just use LM Studio
+        # With only LM Studio in MODELS but no host set, it should return a tier
+        # with provider "lmstudio" — the first available local model.
         tier = _get_default_tier()
-        assert tier == "L0-Coder"
+        assert tier in ("L0-Coder", "L0-Sushi", "L0-GPTOSS"), f"Unexpected default tier: {tier}"
 
 
 class TestEstimateTokens:

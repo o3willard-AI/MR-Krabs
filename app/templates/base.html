@@ -1,0 +1,192 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}My Flask App{% endblock %}</title>
+    <style>
+        /* CSS Reset */
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            font-family: sans-serif;
+            line-height: 1.15;
+            -webkit-text-size-adjust: 100%;
+            -webkit-tap-highlight-color: rgba(0, 0, 0, 0);
+        }
+
+        body {
+            font-size: 1rem;
+            font-weight: 400;
+            color: #f8f9fa; /* Light text */
+            background-color: #212529; /* Dark background */
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Utility Classes */
+        .container {
+            width: 100%;
+            padding-right: 15px;
+            padding-left: 15px;
+            margin-right: auto;
+            margin-left: auto;
+        }
+
+        @media (min-width: 576px) {
+            .container { max-width: 540px; }
+        }
+        @media (min-width: 768px) {
+            .container { max-width: 720px; }
+        }
+        @media (min-width: 992px) {
+            .container { max-width: 960px; }
+        }
+        @media (min-width: 1200px) {
+            .container { max-width: 1140px; }
+        }
+
+        .row {
+            display: flex;
+            flex-wrap: wrap;
+            margin-right: -15px;
+            margin-left: -15px;
+        }
+
+        .col-12 { flex: 0 0 100%; max-width: 100%; }
+        .col-md-3 {
+            flex: 0 0 25%;
+            max-width: 25%;
+        }
+        .col-md-9 {
+            flex: 0 0 75%;
+            max-width: 75%;
+        }
+
+        @media (max-width: 767.98px) {
+            .col-md-3, .col-md-9 {
+                flex: 0 0 100%;
+                max-width: 100%;
+            }
+        }
+
+        /* Dark Theme Specifics */
+        a {
+            color: #007bff; /* Bootstrap primary blue */
+            text-decoration: none;
+        }
+        a:hover {
+            color: #0056b3;
+            text-decoration: underline;
+        }
+
+        button, input[type="button"], input[type="submit"] {
+            min-height: 48px; /* Minimum button target size */
+            min-width: 48px; /* Minimum button target size */
+            padding: 0.5rem 1rem;
+            font-size: 1rem;
+            line-height: 1.5;
+            border-radius: 0.25rem;
+            cursor: pointer;
+            border: 1px solid transparent;
+            background-color: #007bff;
+            color: #fff;
+        }
+        button:hover, input[type="button"]:hover, input[type="submit"]:hover {
+            background-color: #0056b3;
+        }
+
+        /* Layout */
+        header {
+            background-color: #343a40; /* Darker than body */
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        nav.sidebar {
+            background-color: #343a40;
+            padding: 1rem;
+            margin-bottom: 1rem; /* For mobile stacking */
+        }
+        nav.sidebar ul {
+            list-style: none;
+        }
+        nav.sidebar ul li {
+            margin-bottom: 0.5rem;
+        }
+        nav.sidebar ul li a {
+            display: block;
+            padding: 0.5rem 1rem;
+            color: #f8f9fa;
+            text-decoration: none;
+        }
+        nav.sidebar ul li a:hover {
+            background-color: #495057;
+            border-radius: 0.25rem;
+        }
+
+        main {
+            flex-grow: 1;
+            padding: 1rem;
+        }
+
+        footer {
+            background-color: #343a40;
+            padding: 1rem;
+            margin-top: 1rem;
+            text-align: center;
+            color: #adb5bd;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>{% block header_title %}My Flask Application{% endblock %}</h1>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="row">
+            <aside class="col-md-3">
+                <nav class="sidebar">
+                    <h3>Navigation</h3>
+                    <ul>
+                        <li><a href="/">Home</a></li>
+                        <li><a href="/about">About</a></li>
+                        <li><a href="/contact">Contact</a></li>
+                        <!-- Add more navigation items here -->
+                    </ul>
+                </nav>
+            </aside>
+            <main class="col-md-9">
+                {% block content %}
+                <!-- Page-specific content will go here -->
+                <p>Welcome to the application!</p>
+                {% endblock %}
+            </main>
+        </div>
+    </div>
+
+    <footer>
+        <div class="container">
+            <p>&copy; {{ now().year }} My Flask App. All rights reserved.</p>
+        </div>
+    </footer>
+
+    {% block scripts %}
+    <script>
+        // Example for getting current year in footer
+        function now() {
+            return new Date().getFullYear();
+        }
+    </script>
+    {% endblock %}
+</body>
+</html>
