@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.core.model_config import MODELS
+from src.core.model_config import get_models
 
 
 class APIKeyValidator:
@@ -41,7 +41,7 @@ class APIKeyValidator:
         results = {"valid": [], "invalid": []}
         checked = set()
 
-        for tier, config in MODELS.items():
+        for tier, config in get_models().items():
             provider = config.get("provider", "")
 
             if provider in checked:

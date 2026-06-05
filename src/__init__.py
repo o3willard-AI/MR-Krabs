@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Optional  # noqa: F401
 
 from src.core.cost import Budget, BudgetExceededError, CostTracker, TokenCount
-from src.core.model_config import MODELS
+from src.core.model_config import get_models
 from src.core.orchestrator import LLMOrchestrator
 from src.core.tier_manager import Tier, TierLevel, TierManager
 
@@ -53,7 +53,7 @@ def _get_default_tracker() -> CostTracker:
 def _get_available_tiers() -> list[str]:
     """Return list of tiers that have required environment variables."""
     available = []
-    for tier, config in MODELS.items():
+    for tier, config in get_models().items():
         # Skip non-agent entries (Judge, Principal)
         if config.get("role") in ("judge", "principal"):
             continue
@@ -144,7 +144,7 @@ def ask(
         tier = TierManager.normalize_tier_name(tier)
     
     selected_tier = tier or _get_default_tier()
-    model_config = MODELS.get(selected_tier, {})
+    model_config = get_models().get(selected_tier, {})
     model_name = str(model_config.get("model", "unknown"))
     provider = str(model_config.get("provider", "unknown"))
     
@@ -187,7 +187,7 @@ def ask(
             output=output,
             cost=float(tracker.get_daily_total()),
             tier=tier_used,
-            model=MODELS.get(tier_used, {}).get("model", ""),
+            model=get_models().get(tier_used, {}).get("model", ""),
             success=result.get("success", False),
             duration_seconds=result.get("duration_seconds", duration),
             attempts=result.get("attempts_total", 0),
@@ -275,7 +275,7 @@ def _ask_with_escalation(
     for tier in coder_tiers:
         tier_name = tier.name
         tier_model = tier.model
-        tier_config = MODELS.get(tier_name, {})
+        tier_config = get_models().get(tier_name, {})
         tier_temp = float(tier_config.get("temperature", 0.7))
         
         # Estimate tokens for this tier

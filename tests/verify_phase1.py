@@ -75,7 +75,6 @@ tier_checks = [
     ("get_tier_by_name", "get_tier_by_name()"),
     ("get_next_tier", "get_next_tier()"),
     ("normalize_tier_name", "normalize_tier_name()"),
-    ("TIER_ALIASES", "tier name aliases"),
 ]
 
 for pattern, desc in tier_checks:

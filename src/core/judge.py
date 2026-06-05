@@ -20,7 +20,7 @@ from typing import List, Optional
 import requests
 
 from src.core.constants import JUDGE_MAX_TOKENS, OPENROUTER_REFERER
-from src.core.model_config import MODELS
+from src.core.model_config import get_models
 from src.core.judge_criteria import CODE_CRITERIA, QA_CRITERIA, PLAN_CRITERIA, detect_task_type
 from src.core.model_profiles import get_known_failures, KnownFailure
 
@@ -58,7 +58,7 @@ class Judge:
         self.acceptance_threshold = acceptance_threshold
         
         # Get the judge model configuration
-        self.model_config = MODELS.get(model)
+        self.model_config = get_models().get(model)
         if not self.model_config:
             raise ValueError(f"Unknown judge model: {model}")
         

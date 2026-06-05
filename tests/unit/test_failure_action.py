@@ -51,7 +51,7 @@ def test_get_tier_max_retries_default_values():
     assert get_tier_max_retries("L2-Coder") == 3
     
     # Test L3-Coder
-    assert get_tier_max_retries("L3-Coder") == 2
+    assert get_tier_max_retries("L3-Coder") == 3  # config-driven default
     
     # Test unknown tier returns default (3)
     assert get_tier_max_retries("Unknown-Tier") == 3
@@ -200,29 +200,24 @@ def test_deny_task():
 
 def test_integration_log_only_tier():
     """Test integration: LOG_ONLY tier should just log and continue."""
-    # This would require mocking the orchestrator, but we can at least verify imports work
-    
-    # Just test that we can import and use everything
-    from src.core.tier_config import TIER_FAILURE_DEFAULTS
-    assert "L0-Coder" in TIER_FAILURE_DEFAULTS
-    assert TIER_FAILURE_DEFAULTS["L0-Coder"]["failure_action"] == "log_only"
-    
+    from src.core.tier_config import get_tier_failure_action
+    from src.core.failure_action import FailureAction
+    assert get_tier_failure_action("L0-Coder") == FailureAction.LOG_ONLY
+
 
 def test_integration_notify_and_escalate_tier():
     """Test integration: NOTIFY_AND_ESCALATE tier should log and continue."""
-    from src.core.tier_config import TIER_FAILURE_DEFAULTS
-    assert "L1-Coder" in TIER_FAILURE_DEFAULTS
-    assert TIER_FAILURE_DEFAULTS["L1-Coder"]["failure_action"] == "notify_and_escalate"
+    from src.core.tier_config import get_tier_failure_action
+    from src.core.failure_action import FailureAction
+    assert get_tier_failure_action("L1-Coder") == FailureAction.NOTIFY_AND_ESCALATE
 
 
 def test_integration_notify_and_wait_tier():
     """Test integration: NOTIFY_AND_WAIT tier should write pending file and wait."""
-    from src.core.tier_config import TIER_FAILURE_DEFAULTS
-    assert "L2-Coder" in TIER_FAILURE_DEFAULTS
-    assert TIER_FAILURE_DEFAULTS["L2-Coder"]["failure_action"] == "notify_and_wait"
-    
-    assert "L3-Coder" in TIER_FAILURE_DEFAULTS
-    assert TIER_FAILURE_DEFAULTS["L3-Coder"]["failure_action"] == "notify_and_wait"
+    from src.core.tier_config import get_tier_failure_action
+    from src.core.failure_action import FailureAction
+    assert get_tier_failure_action("L2-Coder") == FailureAction.NOTIFY_AND_WAIT
+    assert get_tier_failure_action("L3-Coder") == FailureAction.NOTIFY_AND_WAIT
 
 
 def test_integration_orchestrator_failure_action_import():

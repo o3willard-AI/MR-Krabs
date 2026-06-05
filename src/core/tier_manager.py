@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Tier management for cost-optimized orchestration.
 
-Defines tier hierarchy, models, and escalation logic with budget awareness.
+Phase D: All tier definitions come from ~/.mrkrabs/config.yaml.
+TIER_ORDER and TIER_ALIASES are derived dynamically from the config.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import Enum
@@ -26,9 +28,9 @@ class TierLevel(Enum):
 @dataclass
 class Tier:
     """Configuration for a single execution tier."""
-    
+
     level: TierLevel
-    name: str  # e.g., "L0-Coder", "L1-Coder"
+    name: str  # e.g., "l0-coder", "l1-coder"
     model: str
     base_url: str
     api_key_env: Optional[str]
@@ -40,294 +42,229 @@ class Tier:
 @dataclass
 class BudgetTierConfig:
     """Configuration for budget-aware tier selection."""
-    
-    # Map of budget percentage thresholds to preferred tier levels
-    # Example: {0.3: "L0", 0.5: "L1", 0.8: "L2"}
-    # Means: if budget > 80% remaining, can use L2; if 50-80%, use L1; if < 30%, use L0
+
     budget_tier_thresholds: Dict[Decimal, TierLevel] = field(default_factory=lambda: {
         Decimal("0.8"): TierLevel.L2,
         Decimal("0.5"): TierLevel.L1,
         Decimal("0.3"): TierLevel.L0,
     })
-    
-    # Simple task classification (tasks that don't need high intelligence)
-    # These are candidates for budget-aware tier reduction
+
     simple_task_thresholds: Dict[str, Decimal] = field(default_factory=lambda: {
-        "simple": Decimal("0.0"),  # Always prefer cheapest for simple tasks
-        "medium": Decimal("0.3"),  # Use cheap tier unless budget > 30%
-        "complex": Decimal("0.6"),  # Only use expensive tier if budget > 60%
+        "simple": Decimal("0.0"),
+        "medium": Decimal("0.3"),
+        "complex": Decimal("0.6"),
     })
-    
-    # Budget-aware tier preference settings
+
     enable_budget_awareness: bool = True
-    budget_restriction_minimum: Decimal = Decimal("0.15")  # Below 15%, restrict to L0 unless forced
-    
-    # Log budget-aware decisions
+    budget_restriction_minimum: Decimal = Decimal("0.15")
     log_budget_decisions: bool = True
-    
+
     def get_preferred_tier(self, budget_remaining_percent: Decimal) -> TierLevel:
-        """Get preferred tier level based on budget remaining percentage."""
         if not self.enable_budget_awareness:
-            return TierLevel.L1  # Default to medium tier
-        
-        # If budget is very low, restrict to cheapest tier
+            return TierLevel.L1
         if budget_remaining_percent <= self.budget_restriction_minimum:
             return TierLevel.L0
-        
-        # Find highest threshold that budget exceeds (>= comparison for exact match)
-        preferred_tier = TierLevel.L0  # Default to cheapest
+        preferred_tier = TierLevel.L0
         for threshold, tier in sorted(self.budget_tier_thresholds.items(), reverse=True):
             if budget_remaining_percent >= threshold:
                 preferred_tier = tier
                 break
-        
         return preferred_tier
-    
+
     def should_restrict_tier(self, task_complexity: str, budget_remaining_percent: Decimal) -> tuple[bool, TierLevel]:
-        """
-        Determine if tier should be restricted based on budget and task complexity.
-        
-        Returns:
-            (should_restrict, preferred_tier)
-        """
         if not self.enable_budget_awareness:
             return (False, TierLevel.L2)
-        
-        # Get base preferred tier from budget
         preferred_tier = self.get_preferred_tier(budget_remaining_percent)
-        
-        # Apply task complexity adjustments
         complexity_threshold = self.simple_task_thresholds.get(task_complexity.lower(), Decimal("0.5"))
-        
         if budget_remaining_percent < complexity_threshold:
             return (True, TierLevel.L0)
-        
         return (False, preferred_tier)
 
 
 class TierManager:
-    """Manages tier hierarchy and escalation logic with budget awareness."""
-    
-    # Predefined tier hierarchy (cheapest to most expensive)
-    TIER_ORDER = [
-        Tier(
-            level=TierLevel.L0,
-            name="L0-Coder",
-            model="qwen/qwen3-coder-30b",
-            base_url="http://192.168.101.21:1234/v1",  # LM Studio (local, free)
-            api_key_env=None,
-            temperature=0.7,
-            cost_per_1k_tokens={"prompt": Decimal("0.0"), "completion": Decimal("0.0")},
-            supports_tools=True
-        ),
-        Tier(
-            level=TierLevel.L1,
-            name="L1-Coder",
-            model="x-ai/grok-4.1-fast",
-            base_url="https://openrouter.ai/api/v1",
-            api_key_env="OPENROUTER_API_KEY",
-            temperature=0.7,
-            cost_per_1k_tokens={"prompt": Decimal("0.002"), "completion": Decimal("0.006")},
-            supports_tools=True
-        ),
-        Tier(
-            level=TierLevel.L2,
-            name="L2-Coder",
-            model="minimax/minimax-m2.7",
-            base_url="https://openrouter.ai/api/v1",
-            api_key_env="OPENROUTER_API_KEY",
-            temperature=0.7,
-            cost_per_1k_tokens={"prompt": Decimal("0.0002"), "completion": Decimal("0.0006")},
-            supports_tools=True
-        ),
-        Tier(
-            level=TierLevel.L3,
-            name="L3-Coder",
-            model="anthropic/claude-sonnet-4.6",
-            base_url="https://openrouter.ai/api/v1",
-            api_key_env="OPENROUTER_API_KEY",
-            temperature=0.7,
-            cost_per_1k_tokens={"prompt": Decimal("0.003"), "completion": Decimal("0.015")},
-            supports_tools=True
-        ),
-        Tier(
+    """Manages tier hierarchy and escalation logic with budget awareness.
+
+    Phase D: Tiers are derived from ~/.mrkrabs/config.yaml at runtime.
+    No hardcoded TIER_ORDER or TIER_ALIASES.
+    """
+
+    @classmethod
+    def _get_config(cls):
+        """Lazy-load the config."""
+        from src.core.config_loader import get_config
+        return get_config()
+
+    @classmethod
+    def _build_tiers(cls) -> list[Tier]:
+        """Build Tier list from config models."""
+        config = cls._get_config()
+        tiers: list[Tier] = []
+        seen = set()
+
+        # Collect all coder-tier models sorted by tier number
+        coder_models = [
+            (cls._extract_tier_num(k), k, m)
+            for k, m in config.models.items()
+            if "coder" in m.roles
+        ]
+        coder_models.sort(key=lambda x: x[0])
+
+        for tier_num, key, model in coder_models:
+            if key in seen:
+                continue
+            seen.add(key)
+
+            # De-duplicate: only keep first model per tier level
+            level = TierLevel(f"L{tier_num}")
+            if any(t.level == level for t in tiers):
+                continue
+
+            provider = config.providers.get(model.provider)
+            base_url = provider.base_url if provider else ""
+
+            # Determine cost (free for local, estimated for cloud)
+            is_local = "1234" in base_url or "localhost" in base_url
+            prompt_cost = Decimal("0.0") if is_local else Decimal("0.000002")
+            completion_cost = Decimal("0.0") if is_local else Decimal("0.000006")
+
+            tiers.append(Tier(
+                level=TierLevel(f"L{tier_num}"),
+                name=f"l{tier_num}-coder",
+                model=model.model,
+                base_url=base_url,
+                api_key_env=provider.api_key_env if provider else None,
+                temperature=model.temperature,
+                cost_per_1k_tokens={"prompt": prompt_cost, "completion": completion_cost},
+                supports_tools=bool(model.tools),
+            ))
+
+        # Add Principal as final tier
+        tiers.append(Tier(
             level=TierLevel.L3,
             name="Principal",
-            model="<principal-agent>",  # not an LLM — returns to caller
+            model="<principal-agent>",
             base_url="<principal-agent>",
             api_key_env=None,
             temperature=0.0,
             cost_per_1k_tokens={"prompt": Decimal("0.0"), "completion": Decimal("0.0")},
-            supports_tools=False
-        ),
-    ]
-    
-    # Simplified tier name aliases (for easier usage)
-    TIER_ALIASES: Dict[str, str] = {
-        "cheap": "L0-Coder",
-        "medium": "L1-Coder",
-        "expensive": "L2-Coder",
-        "premium": "L3-Coder",
-    }
-    
-    # Cost tier aliases mapping to actual tier names
+            supports_tools=False,
+        ))
+
+        return tiers
+
+    @classmethod
+    def _extract_tier_num(cls, key: str) -> int:
+        """Extract tier number from key: l0-coder → 0, l2-planner → 2."""
+        match = re.match(r"l(\d+)", key.lower())
+        return int(match.group(1)) if match else 0
+
+    @classmethod
+    def get_tier(cls, level: TierLevel) -> Tier:
+        for tier in cls._build_tiers():
+            if tier.level == level:
+                return tier
+        raise ValueError(f"Unknown tier level: {level}")
+
+    @classmethod
+    def get_tier_by_name(cls, name: str) -> Tier:
+        normalized = cls.normalize_tier_name(name).lower()
+        for tier in cls._build_tiers():
+            if tier.name.lower() == normalized:
+                return tier
+        raise ValueError(f"Unknown tier name: {name}")
+
+    @classmethod
+    def get_next_tier(cls, current_tier: Tier) -> Optional[Tier]:
+        tiers = cls._build_tiers()
+        current_index = tiers.index(current_tier) if current_tier in tiers else -1
+        if current_index >= 0 and current_index < len(tiers) - 1:
+            return tiers[current_index + 1]
+        return None
+
+    @classmethod
+    def get_all_tiers(cls) -> list[Tier]:
+        return cls._build_tiers()
+
+    # Cost tier aliases mapping to actual tier levels
     COST_TIER_NAMES = {
         "cheap": TierLevel.L0,
         "medium": TierLevel.L1,
         "expensive": TierLevel.L2,
         "premium": TierLevel.L3,
     }
-    
-    def __init__(self, budget_config: Optional[BudgetTierConfig] = None):
-        """Initialize tier manager with optional budget configuration."""
-        self.budget_config = budget_config or BudgetTierConfig()
-    
-    @classmethod
-    def get_tier(cls, level: TierLevel) -> Tier:
-        """Get tier configuration by level."""
-        for tier in cls.TIER_ORDER:
-            if tier.level == level:
-                return tier
-        raise ValueError(f"Unknown tier level: {level}")
-    
-    @classmethod
-    def get_tier_by_name(cls, name: str) -> Tier:
-        """Get tier configuration by name (e.g., 'L0-Coder')."""
-        normalized_name = cls.normalize_tier_name(name)
-        for tier in cls.TIER_ORDER:
-            if tier.name == normalized_name:
-                return tier
-        raise ValueError(f"Unknown tier name: {name}")
-    
-    @classmethod
-    def get_next_tier(cls, current_tier: Tier) -> Optional[Tier]:
-        """Get next more expensive tier, or None if already at L3."""
-        current_index = cls.TIER_ORDER.index(current_tier)
-        if current_index < len(cls.TIER_ORDER) - 1:
-            return cls.TIER_ORDER[current_index + 1]
-        return None
-    
-    @classmethod
-    def get_all_tiers(cls) -> list[Tier]:
-        """Get all tiers in order from cheapest to most expensive."""
-        return cls.TIER_ORDER.copy()
-    
+
+    # Legacy tier name aliases for backward compat
+    _TIER_ALIASES: Dict[str, str] = {
+        "cheap": "L0-Coder",
+        "medium": "L1-Coder",
+        "expensive": "L2-Coder",
+        "premium": "L3-Coder",
+    }
+
     @classmethod
     def normalize_tier_name(cls, tier: str) -> str:
-        """Convert simplified names to actual tier names.
-        
-        Examples:
-            'cheap' -> 'L0-Coder'
-            'L0-Coder' -> 'L0-Coder' (no change)
-            'L1-Planner' -> 'L1-Planner' (no change, not in aliases)
-        """
-        return cls.TIER_ALIASES.get(tier.lower(), tier)
-    
+        """Normalize tier names, including legacy aliases (cheap→L0-Coder, etc.)."""
+        return cls._TIER_ALIASES.get(tier.lower(), tier)
+
     @classmethod
     def get_default_tier(cls) -> Tier:
-        """Get the default starting tier (cheapest capable)."""
-        return cls.TIER_ORDER[0]
-    
+        tiers = cls._build_tiers()
+        return tiers[0] if tiers else None
+
     @classmethod
     def get_max_tier(cls) -> Tier:
-        """Get the maximum tier (most expensive)."""
-        return cls.TIER_ORDER[-1]
+        tiers = cls._build_tiers()
+        return tiers[-1] if tiers else None
+
+    def __init__(self, budget_config: Optional[BudgetTierConfig] = None):
+        self.budget_config = budget_config or BudgetTierConfig()
 
     def find_capable_model(self, tier_level: TierLevel, token_count: int = 0, requires_tools: bool = False) -> str | None:
-        """
-        Find a model within the specified tier that can handle the requirements.
-        
-        If no capable model is found in the current tier, escalate to the next tier
-        until a capable model is found or all tiers are exhausted.
-        
-        Args:
-            tier_level: The starting tier level to search from
-            token_count: Required context size (in tokens)
-            requires_tools: Whether the task requires tool calling support
-            
-        Returns:
-            Model ID string if found, None otherwise
-        """
-        # Find the starting tier
-        current_tier = self.get_tier(tier_level)
-        
-        # Check if the current tier's model can handle the requirements
-        current_model_id = current_tier.model
-        capability = MODEL_REGISTRY.get(current_model_id)
-        
-        # If we have capability data for this model, check if it meets requirements
-        if capability is not None:
-            if token_count > 0 and not capability.can_handle_context(token_count):
-                # Context window too small - skip to next tier
-                pass
-            elif not capability.can_handle_task(requires_tools=requires_tools):
-                # Tool calling not supported - skip to next tier
-                pass
-            else:
-                # Model is capable, return it
-                return current_model_id
-        
-        # If we can't use the current tier's model, look for a capable model in higher tiers
-        current_index = self.TIER_ORDER.index(current_tier)
-        for i in range(current_index + 1, len(self.TIER_ORDER)):
-            next_tier = self.TIER_ORDER[i]
-            next_model_id = next_tier.model
-            
-            # Check if this tier's model can handle the requirements
-            capability = MODEL_REGISTRY.get(next_model_id)
+        tiers = self._build_tiers()
+        current_index = next((i for i, t in enumerate(tiers) if t.level == tier_level), 0)
+
+        for i in range(current_index, len(tiers)):
+            tier = tiers[i]
+            if tier.model == "<principal-agent>":
+                continue
+            capability = MODEL_REGISTRY.get(tier.model)
             if capability is not None:
                 if token_count > 0 and not capability.can_handle_context(token_count):
-                    continue  # Skip this tier, context window too small
+                    continue
                 if not capability.can_handle_task(requires_tools=requires_tools):
-                    continue  # Skip this tier, tool calling not supported
-                return next_model_id  # Found a capable model
-        
-        # If we get here, no capable model found in any tier
+                    continue
+                return tier.model
+            # No capability data — assume capable
+            return tier.model
+
         return None
-    
+
     def select_tier(self, task_complexity: str = "medium", budget_remaining_percent: Decimal = Decimal("1.0"),
                     force_tier: Optional[TierLevel] = None) -> tuple[Tier, bool, str]:
-        """
-        Select tier based on budget awareness and task complexity.
-        
-        Args:
-            task_complexity: Task type ("simple", "medium", "complex")
-            budget_remaining_percent: Percentage of budget remaining (0.0 to 1.0)
-            force_tier: Optional tier override (bypasses budget-aware selection)
-        
-        Returns:
-            (selected_tier, was_restricted, reason)
-        """
-        # If force_tier is provided, use it directly
         if force_tier:
             tier = self.get_tier(force_tier)
             return (tier, False, f"Force tier requested: {force_tier.value}")
-        
-        # Get budget-aware preferences
+
         should_restrict, preferred_tier = self.budget_config.should_restrict_tier(
             task_complexity, budget_remaining_percent
         )
-        
-        # Determine selected tier
+
         if should_restrict:
             selected_tier = self.get_tier(TierLevel.L0)
-            reason = f"Budget restriction (<{self.budget_config.simple_task_thresholds.get(task_complexity.lower(), Decimal('0.5'))*100:.0f}%): selecting L0"
+            reason = f"Budget restriction: selecting L0"
             was_restricted = True
         else:
             selected_tier = self.get_tier(preferred_tier)
             was_restricted = False
             reason = f"Budget-aware selection at {budget_remaining_percent*100:.0f}% remaining: {preferred_tier.value}"
-        
-        # Log decision if configured
+
         if self.budget_config.log_budget_decisions:
             logger.info(f"[TIER SELECTED] {reason} | Task: {task_complexity} | Budget: {budget_remaining_percent*100:.1f}%")
-        
+
         return (selected_tier, was_restricted, reason)
-    
+
     def get_budget_aware_status(self, budget_remaining_percent: Decimal) -> Dict:
-        """Get budget-aware tier selection status."""
         preferred_tier = self.budget_config.get_preferred_tier(budget_remaining_percent)
-        
         return {
             "budget_remaining_percent": float(budget_remaining_percent),
             "preferred_tier": preferred_tier.value,

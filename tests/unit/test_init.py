@@ -66,8 +66,10 @@ class TestGetDefaultTracker:
     """Tests for _get_default_tracker function."""
 
     def setup_method(self):
-        """Reset tracker before each test."""
+        """Reset tracker and config cache before each test."""
         reset_tracker()
+        from src.core.config_loader import reset_config_cache
+        reset_config_cache()
 
     def teardown_method(self):
         """Clean up after each test."""
@@ -175,16 +177,18 @@ class TestAskBasic:
     """Tests for basic ask() functionality."""
 
     def setup_method(self):
-        """Reset tracker before each test."""
+        """Reset tracker and config cache before each test."""
         reset_tracker()
+        from src.core.config_loader import reset_config_cache
+        reset_config_cache()
 
     def teardown_method(self):
         """Clean up after each test."""
         reset_tracker()
 
     @patch("src.__init__.LLMOrchestrator")
-    @patch("src.__init__.MODELS", {"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}})
-    def test_ask_basic_success(self, mock_orchestrator_class):
+    @patch("src.__init__.get_models", return_value={"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}})
+    def test_ask_basic_success(self, mock_models, mock_orchestrator_class):
         """Test basic ask() with mock execute_with_judge success."""
         mock_orchestrator = MagicMock()
         mock_orchestrator_class.return_value = mock_orchestrator
@@ -206,8 +210,8 @@ class TestAskBasic:
         assert result.attempts == 1
 
     @patch("src.__init__.LLMOrchestrator")
-    @patch("src.__init__.MODELS", {"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}})
-    def test_ask_max_cost_exceeded(self, mock_orchestrator_class):
+    @patch("src.__init__.get_models", return_value={"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}})
+    def test_ask_max_cost_exceeded(self, mock_models, mock_orchestrator_class):
         """Test ask() respects max_cost parameter."""
         mock_orchestrator = MagicMock()
         mock_orchestrator_class.return_value = mock_orchestrator
@@ -223,8 +227,8 @@ class TestAskBasic:
             assert "max_cost" in str(exc_info.value).lower()
 
     @patch("src.__init__.LLMOrchestrator")
-    @patch("src.__init__.MODELS", {"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}})
-    def test_ask_with_system_prompt(self, mock_orchestrator_class, tmp_path):
+    @patch("src.__init__.get_models", return_value={"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}})
+    def test_ask_with_system_prompt(self, mock_models, mock_orchestrator_class, tmp_path):
         """Test ask() with custom system prompt."""
         mock_orchestrator = MagicMock()
         mock_orchestrator_class.return_value = mock_orchestrator
@@ -243,8 +247,8 @@ class TestAskBasic:
         assert result.success is True
 
     @patch("src.__init__.LLMOrchestrator")
-    @patch("src.__init__.MODELS", {"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}, "L1-Coder": {"model": "test-model-2", "provider": "lmstudio", "temperature": 0.7}})
-    def test_ask_with_tier_override(self, mock_orchestrator_class, tmp_path):
+    @patch("src.__init__.get_models", return_value={"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}, "L1-Coder": {"model": "test-model-2", "provider": "lmstudio", "temperature": 0.7}})
+    def test_ask_with_tier_override(self, mock_models, mock_orchestrator_class, tmp_path):
         """Test ask() with tier override."""
         mock_orchestrator = MagicMock()
         mock_orchestrator_class.return_value = mock_orchestrator
@@ -267,8 +271,10 @@ class TestAskWithEscalation:
     """Tests for ask() with auto_escalate=True (judge-based execute_with_judge)."""
 
     def setup_method(self):
-        """Reset tracker before each test."""
+        """Reset tracker and config cache before each test."""
         reset_tracker()
+        from src.core.config_loader import reset_config_cache
+        reset_config_cache()
 
     def teardown_method(self):
         """Clean up after each test."""
@@ -341,8 +347,10 @@ class TestGetBudgetRemaining:
     """Tests for get_budget_remaining function."""
 
     def setup_method(self):
-        """Reset tracker before each test."""
+        """Reset tracker and config cache before each test."""
         reset_tracker()
+        from src.core.config_loader import reset_config_cache
+        reset_config_cache()
 
     def teardown_method(self):
         """Clean up after each test."""
@@ -367,8 +375,10 @@ class TestGetCostSummary:
     """Tests for get_cost_summary function."""
 
     def setup_method(self):
-        """Reset tracker before each test."""
+        """Reset tracker and config cache before each test."""
         reset_tracker()
+        from src.core.config_loader import reset_config_cache
+        reset_config_cache()
 
     def teardown_method(self):
         """Clean up after each test."""
@@ -420,16 +430,18 @@ class TestAskErrorHandling:
     """Tests for error handling in ask() function."""
 
     def setup_method(self):
-        """Reset tracker before each test."""
+        """Reset tracker and config cache before each test."""
         reset_tracker()
+        from src.core.config_loader import reset_config_cache
+        reset_config_cache()
 
     def teardown_method(self):
         """Clean up after each test."""
         reset_tracker()
 
     @patch("src.__init__.LLMOrchestrator")
-    @patch("src.__init__.MODELS", {"L0-Coder": {"model": "test-model", "provider": "openrouter", "temperature": 0.7}})
-    def test_ask_missing_api_key(self, mock_orchestrator_class, tmp_path):
+    @patch("src.__init__.get_models", return_value={"L0-Coder": {"model": "test-model", "provider": "openrouter", "temperature": 0.7}})
+    def test_ask_missing_api_key(self, mock_models, mock_orchestrator_class, tmp_path):
         """Test ask() raises error when OpenRouter API key missing."""
         if "OPENROUTER_API_KEY" in os.environ:
             del os.environ["OPENROUTER_API_KEY"]
@@ -440,8 +452,8 @@ class TestAskErrorHandling:
         assert "OPENROUTER_API_KEY" in str(exc_info.value)
 
     @patch("src.__init__.LLMOrchestrator")
-    @patch("src.__init__.MODELS", {"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}})
-    def test_ask_llm_failure(self, mock_orchestrator_class, tmp_path):
+    @patch("src.__init__.get_models", return_value={"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}})
+    def test_ask_llm_failure(self, mock_models, mock_orchestrator_class, tmp_path):
         """Test ask() handles LLM failure gracefully."""
         mock_orchestrator = MagicMock()
         mock_orchestrator_class.return_value = mock_orchestrator
@@ -461,16 +473,18 @@ class TestAskIntegration:
     """Integration tests for ask() with realistic scenarios."""
 
     def setup_method(self):
-        """Reset tracker before each test."""
+        """Reset tracker and config cache before each test."""
         reset_tracker()
+        from src.core.config_loader import reset_config_cache
+        reset_config_cache()
 
     def teardown_method(self):
         """Clean up after each test."""
         reset_tracker()
 
     @patch("src.__init__.LLMOrchestrator")
-    @patch("src.__init__.MODELS", {"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}})
-    def test_ask_full_workflow_success(self, mock_orchestrator_class):
+    @patch("src.__init__.get_models", return_value={"L0-Coder": {"model": "test-model", "provider": "lmstudio", "temperature": 0.7}})
+    def test_ask_full_workflow_success(self, mock_models, mock_orchestrator_class):
         """Test complete ask() workflow with success."""
         mock_orchestrator = MagicMock()
         mock_orchestrator_class.return_value = mock_orchestrator

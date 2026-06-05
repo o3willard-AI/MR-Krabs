@@ -13,7 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.core.config import config_to_budget, load_config  # noqa: E402
 from src.core.cost import Budget, CostTracker, TokenCount  # noqa: E402
-from src.core.model_config import MODELS  # noqa: E402
+from src.core.model_config import get_models
 
 def cmd_init(config_path: Path | None = None) -> int:
     """Interactive setup wizard."""
@@ -112,7 +112,7 @@ def cmd_doctor() -> int:
 
     # Check available tiers
     available_tiers = []
-    for tier, config in MODELS.items():
+    for tier, config in get_models().items():
         provider = config.get("provider")
         if provider == "openrouter":
             if openrouter_key:
@@ -181,7 +181,7 @@ def cmd_dry_run(description: str, tier: str | None = None) -> int:
     tracker = CostTracker(budget=budget)
 
     selected_tier = tier or "L0"
-    model = MODELS.get(selected_tier, MODELS.get("L0-Planner", {}))
+    model = get_models().get(selected_tier, get_models().get("L0-Planner", {}))
     model_name = model.get("model", "unknown")
 
     prompt_tokens = len(description) // 4

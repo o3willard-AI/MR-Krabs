@@ -13,7 +13,7 @@ import warnings
 from src.core.circuit_breaker import CircuitBreakerRegistry
 from src.core.cost import CostTracker, TokenCount
 from src.core.judge import Judge, Verdict
-from src.core.model_config import MODELS
+from src.core.model_config import get_models
 from src.core.failure_action import FailureAction
 from src.core.tier_config import get_tier_failure_action, get_tier_max_retries
 from src.core.fail_now import get_fail_now, clear_fail_now, is_fail_now_active, check_mesh_fail_now
@@ -289,7 +289,7 @@ class LLMOrchestrator:
 
     def get_api_key(self, tier: str) -> str | None:
         """Get API key for specified tier."""
-        config = MODELS.get(tier, {})
+        config = get_models().get(tier, {})
         env_var = config.get("env_var")
         return os.environ.get(env_var) if env_var else None
 
@@ -725,13 +725,13 @@ class LLMOrchestrator:
             # Check mesh signal file
             check_mesh_fail_now()
             # Validate the tier exists
-            if fail_now_tier not in MODELS:
+            if fail_now_tier not in get_models():
                 # Fall through to closest available tier
-                available = [t for t in tiers or ["L0-Coder", "L1-Coder", "L2-Coder", "Principal"] if t in MODELS]
+                available = [t for t in tiers or ["L0-Coder", "L1-Coder", "L2-Coder", "Principal"] if t in get_models()]
                 fail_now_tier = available[-1] if available else None
             
             if fail_now_tier:
-                tier_config = MODELS.get(fail_now_tier, {})
+                tier_config = get_models().get(fail_now_tier, {})
                 # One-shot call — no retry, no judge
                 result = self.call_llm_with_retry(
                     fail_now_tier, agent_system_prompt, str(context.get("task_spec", task_id)),
@@ -770,7 +770,7 @@ class LLMOrchestrator:
             fail_up_aborted = False  # track if fail_up triggered this tier
 
             # Look up tier config (used by Principal check, circuit breaker, and retry loop)
-            tier_config = MODELS.get(tier, {})
+            tier_config = get_models().get(tier, {})
 
             # --- Principal Agent check ---
             # Principal has no provider/model — it's the user's own agent.

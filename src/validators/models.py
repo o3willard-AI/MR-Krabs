@@ -10,7 +10,7 @@ import requests
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.core.model_config import MODELS
+from src.core.model_config import get_models
 
 
 class ModelValidator:
@@ -49,7 +49,7 @@ class ModelValidator:
         Returns:
             Tuple of (is_valid, message, similar_models)
         """
-        config = MODELS.get(tier)
+        config = get_models().get(tier)
         if not config:
             return False, f"Unknown tier: {tier}", []
 
@@ -85,8 +85,8 @@ class ModelValidator:
         """Validate all configured models."""
         results = {"valid": [], "invalid": [], "local": []}
 
-        for tier in MODELS.keys():
-            config = MODELS[tier]
+        for tier in get_models().keys():
+            config = get_models()[tier]
             provider = config.get("provider", "")
 
             if provider != "openrouter":
@@ -118,7 +118,7 @@ class ModelValidator:
             print(f"✓ {r['tier']}: {r['model']}")
 
         for r in results.get("local", []):
-            print(f"○ {r}: {MODELS[r].get('model')} (local)")
+            print(f"○ {r}: {get_models()[r].get('model')} (local)")
 
         for r in results.get("invalid", []):
             print(f"✗ {r['tier']}: {r['model']}")

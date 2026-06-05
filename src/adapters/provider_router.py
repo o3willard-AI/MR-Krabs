@@ -16,8 +16,8 @@ class ProviderRouter:
     """Creates and caches provider adapter instances keyed on tier name."""
 
     def __init__(self):
-        from src.core.model_config import MODELS
-        self._tiers = MODELS
+        from src.core.model_config import get_models
+        self._tiers = get_models()
         self._adapters: Dict[str, LiteLLMAdapter] = {}
 
     def get_adapter(self, tier: str) -> Optional[LiteLLMAdapter]:

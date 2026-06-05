@@ -10,7 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.cli.commands import cmd_doctor, cmd_dry_run, cmd_explain, cmd_init, cmd_stats  # noqa: E402
 from src.core.metrics import MetricsCollector  # noqa: E402
-from src.core.model_config import MODELS  # noqa: E402
+from src.core.model_config import get_models  # noqa: E402
 from src.core.orchestrator import LLMOrchestrator  # noqa: E402
 from src.core.cost import CostTracker  # noqa: E402
 
@@ -55,7 +55,7 @@ class OrchestratorCLI:
     def execute_task(self, task_id, tier, context, output_file=None):
         if self.use_rich:
             self.console.print(f"\n[bold]Executing Task {task_id} with Tier {tier}[/bold]")
-            self.console.print(f"Model: [cyan]{MODELS[tier]['model']}[/cyan]")
+            self.console.print(f"Model: [cyan]{get_models()[tier]['model']}[/cyan]")
 
             with Progress(
                 SpinnerColumn(),
@@ -72,7 +72,7 @@ class OrchestratorCLI:
                     raise
         else:
             print(f"\nExecuting Task {task_id} with Tier {tier}")
-            print(f"Model: {MODELS[tier]['model']}")
+            print(f"Model: {get_models()[tier]['model']}")
             result = self.orchestrator.execute_task(task_id, tier, context)
 
         if result["success"]:
@@ -150,7 +150,7 @@ def main():
     
     run_p = sub.add_parser("run", help="Execute a task")
     run_p.add_argument("description", help="Task description")
-    run_p.add_argument("--tier", required=True, choices=list(MODELS.keys()))
+    run_p.add_argument("--tier", required=True, choices=list(get_models().keys()))
     run_p.add_argument("--task-id", default="task-1")
     run_p.add_argument("--output")
     run_p.add_argument("--no-rich", action="store_true")
