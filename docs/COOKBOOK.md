@@ -1,94 +1,60 @@
-# Cookbook / Recipes
+# Cookbook
 
-## 1. Save money on a CrewAI project
+Integration recipes for AI agents. Every example is executable.
 
-```python
-from cost_orchestrator import ask
-
-# Wrap your CrewAI agent calls
-result = ask("Write a Python function that sorts a list")
-print(f"Cost: ${result.cost:.4f}, Tier: {result.tier}")
-```
-
-## 2. Track LangChain agent cost per conversation
+## 1. Execute from command line
 
 ```python
-from cost_orchestrator import ask, get_cost_summary
-
-# Each conversation turn
-result = ask("Summarize this document", tier="L0")
-print(f"Turn cost: ${result.cost:.4f}")
-
-# End of conversation
-summary = get_cost_summary()
-print(f"Conversation total: ${summary['daily_total']:.4f}")
+import subprocess, json
+result = subprocess.run(
+    ["python", "-m", "src.core.orchestrator", "--task", "Write a UUID v7 generator"],
+    capture_output=True, text=True, cwd="/path/to/MR-Krabs"
+)
+output = json.loads(result.stdout)
 ```
 
-## 3. Set up a team budget with alerts
-
-```toml
-# .cost_orchestrator.toml
-[budget]
-daily_limit_usd = "50.00"
-warning_threshold = "0.8"
-failure_mode = "fail_open_with_alert"
-emergency_cap_usd = "10.00"
-```
+## 2. Programmatic with judge pipeline
 
 ```python
-from cost_orchestrator import get_budget_remaining
+from src.core.orchestrator import LLMOrchestrator
 
-print(f"Remaining: ${get_budget_remaining():.2f}")
+orch = LLMOrchestrator()
+result = orch.execute_with_judge(
+    task_id="rate-limiter",
+    context={"task_spec": "Write an async rate limiter with Redis backend"},
+    tiers=["l0-coder", "l1-coder", "l2-coder", "principal"],
+    max_retries_per_tier=3,
+)
 ```
 
-## 4. Use only local models (no cloud)
-
-```toml
-# .cost_orchestrator.toml
-[providers.lmstudio]
-base_url = "http://localhost:1234/v1"
-
-[tiers]
-L0 = { models = ["qwen/qwen3-coder-30b"], max_retries = 3 }
-```
+## 3. L0-only (zero cloud cost)
 
 ```python
-from cost_orchestrator import ask
-
-result = ask("Write hello world")
-# Cost: $0.0000 (local model)
+result = orch.execute_with_judge(
+    task_id="simple-sort",
+    context={"task_spec": "Sort a list of dicts by key"},
+    tiers=["l0-coder", "principal"],
+    max_retries_per_tier=5,
+)
 ```
 
-## 5. Optimize for speed, not cost
-
-```toml
-# .cost_orchestrator.toml
-[tiers]
-L0 = { models = ["x-ai/grok-4.1-fast"], max_retries = 1 }
-L1 = { models = ["anthropic/claude-sonnet-4.6"], max_retries = 1 }
-```
-
-Start with a fast model and escalate to the best model quickly.
-
-## 6. Set per-task cost limits
+## 4. Force escalation
 
 ```python
-from cost_orchestrator import ask
-
-# This task won't exceed $0.50
-result = ask("Write a simple function", max_cost=0.50)
+import os
+os.environ["MRKRABS_FAIL_NOW"] = "l2-coder"
+result = orch.execute_with_judge(task_id="complex", ...)
 ```
 
-## 7. Dry-run before executing
+## 5. Abort stuck tier
+
+```python
+os.environ["MRKRABS_FAIL_UP"] = "1"
+```
+
+## 6. Verify install
 
 ```bash
-orchestrator dry-run "Create auth middleware"
-# Shows estimated cost without calling any LLM
-```
-
-## 8. Check system health
-
-```bash
-orchestrator doctor
-# Verifies API keys, config, templates, and connectivity
+python -m src.validators.templates
+python -m src.validators.startup
 ```
