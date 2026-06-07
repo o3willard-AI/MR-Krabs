@@ -11,21 +11,17 @@ class TemplateValidator:
     """Validates prompt template files."""
 
     REQUIRED_TEMPLATES = {
-        "L0-Planner": "01-planner.md",
-        "L0-Coder": "02-l0-coder.md",
-        "L0-Reviewer": "03-reviewer.md",
-        "L1-Coder": "04-l1-coder.md",
-        "L2-Coder": "05-l2-coder.md",
-        "L3-Coder": "05-l2-coder.md",
-        "L3-Architect": "06-l3-architect.md",
+        "Code": "code-system-prompt.md",
+        "Code-PI": "code-pi-system-prompt.md",
+        "Plan": "plan-system-prompt.md",
     }
 
     def __init__(self, templates_dir: str = None):
         if templates_dir:
             self.templates_dir = Path(templates_dir)
         else:
-            # Default to orchestrator/templates
-            self.templates_dir = Path(__file__).parent.parent.parent / "templates"
+            # Default to docs/workflow/templates (PI agent pipeline)
+            self.templates_dir = Path(__file__).parent.parent.parent / "docs" / "workflow" / "templates"
 
     def validate_template(self, filename: str) -> tuple[bool, str]:
         """Validate a single template file."""

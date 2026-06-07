@@ -4,6 +4,8 @@
 import json
 import os
 import re
+import shlex
+import subprocess
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +21,9 @@ from src.core.tier_config import get_tier_failure_action, get_tier_max_retries
 from src.core.fail_now import get_fail_now, clear_fail_now, is_fail_now_active, check_mesh_fail_now
 from src.core.fail_now import is_fail_up_active, clear_fail_up, check_mesh_fail_up
 from src.core.model_profiles import get_prepend, get_known_failures
+
+# Prompt flow debug logger (opt-in via MRKRABS_PROMPT_FLOW_DEBUG=1)
+from src.core.prompt_flow_logger import PromptFlowLogger
 
 # Configuration
 MAX_RETRIES = 3
@@ -287,6 +292,24 @@ class LLMOrchestrator:
         for d in [self.handoffs_dir, self.escalations_dir, self.tasks_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
+        # PI coder backend — maps tier names to PI model specs from config.yaml
+        try:
+            from src.core.config_loader import load_config
+            cfg = load_config()
+            raw_pi = getattr(cfg, "pi_models", None) or {}
+            self.pi_models = {k.lower(): v for k, v in raw_pi.items()}
+            raw_pt = getattr(cfg, "pi_timeouts", None) or {}
+            self.pi_timeouts = {k.lower(): v for k, v in raw_pt.items()}
+        except Exception:
+            self.pi_models = {}
+            self.pi_timeouts = {}
+
+        # Prompt flow debug logger (no-op when disabled)
+        debug_enabled = os.environ.get("MRKRABS_PROMPT_FLOW_DEBUG", "") == "1"
+        self._prompt_flow_logger = PromptFlowLogger(
+            task_id="__init__", enabled=debug_enabled
+        )
+
     def get_api_key(self, tier: str) -> str | None:
         """Get API key for specified tier."""
         config = get_models().get(tier, {})
@@ -504,9 +527,7 @@ class LLMOrchestrator:
         except Exception as e:
             raise Exception(f"Adapter call failed for tier {tier}: {e}")
 
-    # Legacy raw-HTTP callers removed (Phase 2 — adapter wiring).
-    # _call_openrouter and _call_lmstudio replaced by ProviderRouter +
-    # OpenAICompatibleAdapter.  See src/adapters/providers/base_provider.py.
+    # ── Agent System Prompts ────────────────────────────────────────────
 
     def _get_agent_system_prompt(self, task_type: str = "code") -> str:
         """Load the agent system prompt template for the task type.
@@ -517,26 +538,168 @@ class LLMOrchestrator:
         template_path = self.workflow_dir / "templates" / f"{task_type}-system-prompt.md"
         if template_path.exists():
             return template_path.read_text()
-        # Fallback: minimal but functional prompt
         return (
             "You are an expert software developer.\n"
-            "Use file_read(\"path\") and file_write(\"path\", \"\"\"content\"\"\") tools.\n"
-            "Read before writing, match existing conventions, write complete code.\n"
-            "If ambiguous, ask. Handle edge cases. Verify your changes work.\n"
+            "Write complete, production-quality code using standard library functions.\n"
+            "Use open(), pathlib, and stdlib — do NOT reference tool functions.\n"
+            "Read before writing, match existing conventions, handle edge cases.\n"
+            "If ambiguous, ask. Verify your changes work.\n"
+        )
+
+    def _get_pi_system_prompt(self, task_type: str = "code") -> str:
+        """Load the PI-adapted system prompt (uses write tool, not ===FILE: markers).
+
+        Loads docs/workflow/templates/{task_type}-pi-system-prompt.md.
+        Falls back to the standard code-system-prompt with a warning.
+        """
+        pi_template = self.workflow_dir / "templates" / f"{task_type}-pi-system-prompt.md"
+        if pi_template.exists():
+            return pi_template.read_text()
+        std = self._get_agent_system_prompt(task_type)
+        return (
+            std
+            + "\n\n## PI-SPECIFIC: Use the write tool to create files. "
+            + "Do NOT use ===FILE: markers — those are for text-mode only."
         )
 
     def _build_system_prompt(self, tier: str, template: str) -> str:
         """Extract system prompt from template."""
-        lines = template.split("\n")
-        system_lines = []
-        for line in lines:
-            if line.startswith("# ROLE:"):
-                system_lines.append(line)
-            elif line.startswith("##"):
-                break
-            else:
-                system_lines.append(line)
-        return "\n".join(system_lines)
+        return template  # template already contains the full prompt
+
+    def _execute_pi_tier(
+        self,
+        tier: str,
+        user_prompt: str,
+        system_prompt: str = "",
+        retry_num: int = 1,
+    ) -> dict[str, Any]:
+        """Execute a coder tier through PI subprocess (--mode json).
+
+        Args:
+            tier: Tier key (l0-coder, l1-coder, l2-coder).
+            user_prompt: The task specification / user message.
+            system_prompt: Quality directives appended via --append-system-prompt.
+            retry_num: Which retry attempt this is (for logging).
+
+        Returns:
+            Dict matching call_llm_with_retry() shape:
+            {success, output, attempt, duration_seconds, written_paths, ...}
+        """
+        import json as _json
+
+        model_spec = self.pi_models.get(tier.lower())
+        if not model_spec:
+            return {
+                "success": False,
+                "error": f"No PI model for tier {tier}",
+                "ready_for_escalation": True,
+            }
+
+        timeout = self.pi_timeouts.get(tier.lower(), 600)
+        pi_cmd = ["pi", "--mode", "json", "--model", model_spec, "--no-session"]
+        if system_prompt:
+            pi_cmd.extend(["--append-system-prompt", system_prompt])
+
+        start_time = time.monotonic()
+        try:
+            proc = subprocess.run(
+                pi_cmd,
+                input=user_prompt,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "error": f"PI timeout ({timeout}s)",
+                "ready_for_escalation": True,
+                "timed_out": True,
+            }
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "error": "PI not installed",
+                "ready_for_escalation": True,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "ready_for_escalation": True,
+            }
+
+        duration = time.monotonic() - start_time
+
+        if proc.returncode != 0:
+            return {
+                "success": False,
+                "error": proc.stderr[:500] if proc.stderr else f"exit {proc.returncode}",
+                "exit_code": proc.returncode,
+                "ready_for_escalation": True,
+                "duration_seconds": duration,
+            }
+
+        # Parse JSONL — extract agent_end + tool calls
+        output_parts = []
+        tool_results = []
+        written_paths = []
+
+        for line in proc.stdout.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = _json.loads(line)
+            except Exception:
+                continue
+
+            etype = event.get("type", "")
+
+            if etype == "agent_end":
+                msg = event.get("message", {})
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    content = "\n".join(
+                        c.get("text", "") for c in content if c.get("type") == "text"
+                    )
+                if content:
+                    output_parts.append(str(content))
+
+            elif etype == "toolCall":
+                name = event.get("name", "")
+                args = event.get("arguments", {})
+                if name in ("write", "write_file", "Write"):
+                    path = args.get("file_path") or args.get("path") or args.get("filePath") or ""
+                    content_val = args.get("content", "")
+                    if path and content_val:
+                        try:
+                            self.file_tools.file_write(path, content_val)
+                            written_paths.append(path)
+                        except Exception:
+                            pass
+                tool_results.append({"tool": name, "args": args})
+
+        output = "\n".join(output_parts).strip()
+        if not output:
+            return {
+                "success": False,
+                "error": "Empty output from PI",
+                "written_paths": written_paths,
+                "ready_for_escalation": True,
+                "duration_seconds": duration,
+            }
+
+        return {
+            "success": True,
+            "output": output,
+            "attempt": retry_num,
+            "duration_seconds": duration,
+            "written_paths": written_paths,
+            "tool_results": tool_results,
+        }
+
+    # ── User prompt builder ─────────────────────────────────────────────
 
     def _build_user_prompt(self, task_id: str, tier: str, context: dict, template: str) -> str:
         """Build user prompt from template and context."""
@@ -718,6 +881,7 @@ class LLMOrchestrator:
         """
         # Load the agent system prompt once (used across all tiers and fail-now)
         agent_system_prompt = self._get_agent_system_prompt(task_type)
+        pi_system_prompt = self._get_pi_system_prompt(task_type)
 
         # Check for fail-now signal
         fail_now_tier = get_fail_now()
@@ -763,6 +927,7 @@ class LLMOrchestrator:
         attempts_total = 0
         retries_per_tier: dict[str, int] = {}
         escalation_path: list[str] = []
+        best_output: dict[str, Any] = {}  # best output across all tiers for Principal handoff
 
         for tier in tiers:
             feedback = ""
@@ -776,12 +941,13 @@ class LLMOrchestrator:
             # Principal has no provider/model — it's the user's own agent.
             # When escalation reaches Principal, return full context so the
             # calling agent (Hermes, Claude Code, etc.) can take over.
-            if tier_config.get("role") == "principal":
+            if tier_config.get("role") == "principal" or tier_config.get("roles") == ["principal"]:
                 principal_context = {
                     "task": context.get("task_spec", task_id),
                     "tiers_attempted": list(escalation_path),
                     "retries_per_tier": dict(retries_per_tier),
                     "last_feedback": feedback,
+                    "best_output": best_output,
                 }
                 print(f"[PRINCIPAL] Escalating to Principal Agent — "
                       f"MR-Krabs tiers exhausted: {escalation_path}")
@@ -851,22 +1017,52 @@ class LLMOrchestrator:
                         f"Critique: {feedback}\n\nPlease fix these issues and try again."
                     )
 
-                result = self.call_llm_with_retry(
-                    tier, agent_system_prompt, str(user_prompt),
-                    temperature=tier_config.get("temperature", 0.7),
-                    timeout_seconds=timeout_seconds,
-                )
+                # Route through PI if this tier has a PI model mapping
+                if self.pi_models.get(tier.lower()):
+                    result = self._execute_pi_tier(
+                        tier,
+                        str(user_prompt),
+                        system_prompt=pi_system_prompt,
+                        retry_num=retry_num,
+                    )
+                else:
+                    result = self.call_llm_with_retry(
+                        tier, agent_system_prompt, str(user_prompt),
+                        temperature=tier_config.get("temperature", 0.7),
+                        timeout_seconds=timeout_seconds,
+                    )
 
                 attempts_total += 1
                 retries_per_tier[tier] += 1
 
                 if not result["success"]:
-                    # HTTP/network failure — skip remaining retries for this tier
-                    print(f"Tier {tier} HTTP failure: {result.get('error', 'unknown')}")
+                    if self.pi_models.get(tier.lower()):
+                        print(f"Tier {tier} PI hard failure: {result.get('error', 'unknown')}")
+                        if result.get("exit_code"):
+                            print(f"Tier {tier} PI exited {result.get('exit_code', '?')} — "
+                                  f"{result.get('error', '')}")
+                    else:
+                        print(f"Tier {tier} HTTP failure: {result.get('error', 'unknown')}")
                     break
 
                 # --- Tool execution ---
-                tool_result = self.tool_executor.parse_and_execute_tools(result["output"])
+                if self.pi_models.get(tier.lower()) and "written_paths" in result:
+                    # PI wrote files — read them back for judge evaluation
+                    pi_paths = result.get("written_paths", [])
+                    tool_result = {"results": [], "tools_executed": len(pi_paths), "all_succeeded": True}
+                    for p in pi_paths:
+                        try:
+                            content = self.file_tools.file_read(p)
+                            tool_result["results"].append({
+                                "tool": "file_write", "path": p,
+                                "success": content.get("success", False),
+                                "content": content.get("content", "")[:2000],
+                                "bytes": len(content.get("content", "")),
+                            })
+                        except Exception:
+                            tool_result["results"].append({"tool": "file_write", "path": p, "success": False})
+                else:
+                    tool_result = self.tool_executor.parse_and_execute_tools(result["output"])
 
                 # --- Judge evaluation ---
                 try:
@@ -916,11 +1112,24 @@ class LLMOrchestrator:
 
                 # --- Verdict ---
                 if verdict.accepted:
+                    # Collect file contents for result
+                    files = {}
+                    for tr in tool_result.get("results", []):
+                        if tr.get("success") and "content" in tr:
+                            files[tr["path"]] = tr["content"]
+                    
+                    best_output = {
+                        "tier": tier, "score": verdict.score,
+                        "output": result["output"], "files": files,
+                    }
+                    
                     duration_seconds = time.monotonic() - start_time
                     return {
                         "task_id": task_id,
                         "success": True,
                         "output": result["output"],
+                        "score": verdict.score,
+                        "files": files,
                         "tier_used": tier,
                         "attempts_total": attempts_total,
                         "retries_per_tier": retries_per_tier,
