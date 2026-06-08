@@ -598,7 +598,18 @@ class LLMOrchestrator:
         timeout = self.pi_timeouts.get(tier.lower(), 600)
         pi_cmd = ["pi", "--mode", "json", "--model", model_spec, "--no-session"]
         if system_prompt:
-            pi_cmd.extend(["--append-system-prompt", system_prompt])
+            # --append-system-prompt expects a FILE PATH, not inline content.
+            # Write the prompt to a temp file and pass the path.
+            import tempfile
+            tmp = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".md", prefix="mrkrabs_pi_sp_", delete=False
+            )
+            tmp.write(system_prompt)
+            tmp.close()
+            pi_cmd.extend(["--append-system-prompt", tmp.name])
+            cleanup_sp = tmp.name
+        else:
+            cleanup_sp = None
 
         start_time = time.monotonic()
         try:
@@ -632,6 +643,11 @@ class LLMOrchestrator:
         duration = time.monotonic() - start_time
 
         if proc.returncode != 0:
+            if cleanup_sp:
+                try:
+                    os.unlink(cleanup_sp)
+                except OSError:
+                    pass
             return {
                 "success": False,
                 "error": proc.stderr[:500] if proc.stderr else f"exit {proc.returncode}",
@@ -707,6 +723,11 @@ class LLMOrchestrator:
             if written_paths:
                 output = f"[Files written: {', '.join(written_paths)}]"
             else:
+                if cleanup_sp:
+                    try:
+                        os.unlink(cleanup_sp)
+                    except OSError:
+                        pass
                 return {
                     "success": False,
                     "error": "Empty output from PI",
@@ -715,6 +736,11 @@ class LLMOrchestrator:
                     "duration_seconds": duration,
                 }
 
+        if cleanup_sp:
+            try:
+                os.unlink(cleanup_sp)
+            except OSError:
+                pass
         return {
             "success": True,
             "output": output,

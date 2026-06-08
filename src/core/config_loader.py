@@ -570,4 +570,8 @@ def legacy_models(config: Optional[MrKrabsConfig] = None) -> Dict[str, Dict[str,
             "profile": model.profile,
         }
         result[legacy_key] = entry
+        # Also register under the normalized key so case-insensitive lookups work
+        # (e.g. judge_model="judge" in workflow config can find "Judge" in models)
+        if key != legacy_key:
+            result[key] = entry
     return result
