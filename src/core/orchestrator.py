@@ -656,7 +656,26 @@ class LLMOrchestrator:
 
             etype = event.get("type", "")
 
-            if etype == "agent_end":
+            # PI wraps tool calls inside message_update → assistantMessageEvent
+            if etype == "message_update":
+                inner = event.get("assistantMessageEvent", {})
+                inner_type = inner.get("type", "")
+                if inner_type in ("toolcall_end", "toolCall"):
+                    tc = inner.get("toolCall", {})
+                    name = tc.get("name", "")
+                    args = tc.get("arguments", {})
+                    if name in ("write", "write_file", "Write"):
+                        path = args.get("file_path") or args.get("path") or args.get("filePath") or ""
+                        content_val = args.get("content", "")
+                        if path and content_val:
+                            try:
+                                self.file_tools.file_write(path, content_val)
+                                written_paths.append(path)
+                            except Exception:
+                                pass
+                    tool_results.append({"tool": name, "args": args})
+
+            elif etype == "agent_end":
                 msg = event.get("message", {})
                 content = msg.get("content", "")
                 if isinstance(content, list):
@@ -666,6 +685,7 @@ class LLMOrchestrator:
                 if content:
                     output_parts.append(str(content))
 
+            # Also handle direct toolCall events (legacy format)
             elif etype == "toolCall":
                 name = event.get("name", "")
                 args = event.get("arguments", {})
@@ -933,6 +953,7 @@ class LLMOrchestrator:
         retries_per_tier: dict[str, int] = {}
         escalation_path: list[str] = []
         best_output: dict[str, Any] = {}  # best output across all tiers for Principal handoff
+        verdict = None  # initialized before retry loop; set by judge evaluation
 
         for tier in tiers:
             feedback = ""
