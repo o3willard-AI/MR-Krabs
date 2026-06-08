@@ -1,7 +1,12 @@
 # src/core/judge_criteria.py
 CODE_CRITERIA = ["correctness", "completeness", "style", "safety", "production_ready"]
 QA_CRITERIA = ["accuracy", "completeness", "clarity", "helpfulness"]
-PLAN_CRITERIA = ["atomicity", "coder_fitness", "anti_pattern_coverage", "dependency_correctness", "file_specificity"]
+PLAN_CRITERIA = ["atomicity", "coder_fitness", "anti_pattern_coverage", "dependency_correctness", "file_specificity", "coder_task_size"]
+
+# Size limits for PI coder tasks (enforced by plan judge)
+MAX_CODER_TASK_KB = 3       # per-task prompt size in KB — PI write tool has content limits
+MAX_CODER_TASK_FILES = 5    # max files per coder task — more requires further decomposition
+MAX_CODER_TASK_TESTS = 8    # max test functions per task — large test files get truncated
 
 def detect_task_type(task: str) -> str:
     """Return 'code', 'plan', or 'qa' based on task content."""

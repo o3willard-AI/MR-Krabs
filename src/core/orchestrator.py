@@ -300,9 +300,12 @@ class LLMOrchestrator:
             self.pi_models = {k.lower(): v for k, v in raw_pi.items()}
             raw_pt = getattr(cfg, "pi_timeouts", None) or {}
             self.pi_timeouts = {k.lower(): v for k, v in raw_pt.items()}
+            raw_wf = getattr(cfg, "workflows", None) or {}
+            self.workflows = {k.lower(): v for k, v in raw_wf.items()}
         except Exception:
             self.pi_models = {}
             self.pi_timeouts = {}
+            self.workflows = {}
 
         # Prompt flow debug logger (no-op when disabled)
         debug_enabled = os.environ.get("MRKRABS_PROMPT_FLOW_DEBUG", "") == "1"
@@ -731,6 +734,7 @@ class LLMOrchestrator:
                 return {
                     "success": False,
                     "error": "Empty output from PI",
+                    "stderr": proc.stderr[:500] if proc.stderr else "",
                     "written_paths": written_paths,
                     "ready_for_escalation": True,
                     "duration_seconds": duration,
@@ -900,6 +904,54 @@ class LLMOrchestrator:
                 timeout_seconds=timeout_seconds or 300.0
             )
 
+    @staticmethod
+    def _split_plan_into_tasks(plan_text: str) -> list[str]:
+        """Split a plan markdown document into individual coder tasks.
+
+        Looks for headings like '## Task N:', '### Subtask N:', or
+        numbered items like '## 1.', '### 1.' followed by task content.
+        Each task block becomes a separate subtask for the coder.
+
+        Returns a list of task strings. If no tasks found, returns
+        an empty list (caller should fall through to full-text execution).
+        """
+        import re
+        # Match markdown headings that indicate a task boundary:
+        #   ## Task 1: Description
+        #   ### Subtask 1 — Description
+        #   ## 1. Description
+        #   ### 1) Description
+        task_pattern = re.compile(
+            r'^(#{2,4})\s+(?:Task|Subtask|Step)?\s*(\d+)[:.\-\)]\s*(.+)',
+            re.MULTILINE | re.IGNORECASE
+        )
+        matches = list(task_pattern.finditer(plan_text))
+        if not matches:
+            # Try looser: any numbered heading
+            task_pattern = re.compile(
+                r'^(#{2,4})\s+(\d+)[:.\-\)]\s+(.+)',
+                re.MULTILINE
+            )
+            matches = list(task_pattern.finditer(plan_text))
+        if len(matches) <= 1:
+            return []
+
+        tasks = []
+        for i, m in enumerate(matches):
+            start = m.start()
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(plan_text)
+            task_block = plan_text[start:end].strip()
+            # Extract just the content after the heading line
+            heading_end = task_block.index('\n') if '\n' in task_block else len(task_block)
+            heading = task_block[:heading_end].strip()
+            body = task_block[heading_end:].strip()
+            # Combine heading + body into a self-contained task spec
+            task_spec = f"{heading}\n{body}" if body else heading
+            # Skip empty or near-empty tasks
+            if len(task_spec) > 30:
+                tasks.append(task_spec)
+        return tasks
+
     def execute_with_judge(
         self,
         task_id: str,
@@ -909,12 +961,17 @@ class LLMOrchestrator:
         max_retries_per_tier: int = 3,
         judge_model: str = "Judge",
         timeout_seconds: float = 300,
+        plan_first: bool = False,
     ) -> dict[str, Any]:
         """Execute a task using Judge-based retry/escalation logic.
 
         Args:
             task_type: "code" or "plan" — determines which agent system
                 prompt template and judge evaluation criteria to use.
+            plan_first: If True, run planning first to decompose large tasks,
+                then execute each subtask through the coder tiers. The plan
+                judge enforces coder_task_size limits (3KB, 5 files, 8 tests).
+                Use this for tasks that may exceed PI's single-invocation limits.
 
         For each tier, calls the LLM up to max_retries_per_tier times.
         After each call, a Judge (LLM-powered) evaluates the output quality.
@@ -933,6 +990,85 @@ class LLMOrchestrator:
         # Load the agent system prompt once (used across all tiers and fail-now)
         agent_system_prompt = self._get_agent_system_prompt(task_type)
         pi_system_prompt = self._get_pi_system_prompt(task_type)
+
+        # ── Pre-flight planning (plan_first) ───────────────────────────
+        if plan_first and task_type == "code":
+            plan_wf = self.workflows.get("plan")
+            plan_tiers = plan_wf.tiers if plan_wf else ["l0-planner", "principal"]
+            plan_judge = plan_wf.judge_model if plan_wf else judge_model
+            plan_retries = plan_wf.max_retries_per_tier if plan_wf else max_retries_per_tier
+            plan_task = f"Decompose into subtasks: {str(context.get('task_spec', task_id))}"
+            plan_context = {"task_spec": plan_task}
+            print(f"Plan-first: decomposing task with {plan_tiers[0]} (judge={plan_judge})")
+            plan_result = self.execute_with_judge(
+                task_id=f"{task_id}-plan",
+                context=plan_context,
+                task_type="plan",
+                tiers=plan_tiers,
+                max_retries_per_tier=plan_retries,
+                judge_model=plan_judge,
+                timeout_seconds=timeout_seconds,
+            )
+            if not plan_result["success"]:
+                return {
+                    "task_id": task_id, "success": False,
+                    "output": plan_result.get("output", ""),
+                    "error": f"Plan decomposition failed: {plan_result.get('verdict', {}).get('critique', 'unknown')}",
+                    "attempts_total": plan_result.get("attempts_total", 0),
+                    "duration_seconds": plan_result.get("duration_seconds", 0),
+                    "escalation_path": ["plan-failed"],
+                }
+            plan_tasks = self._split_plan_into_tasks(plan_result["output"])
+            if plan_tasks and len(plan_tasks) > 1:
+                print(f"Plan-first: executing {len(plan_tasks)} subtasks")
+                results = []
+                total_attempts = plan_result.get("attempts_total", 0)
+                total_duration = plan_result.get("duration_seconds", 0)
+                for i, subtask in enumerate(plan_tasks):
+                    sub_id = f"{task_id}-sub{i+1}"
+                    sub_context = {"task_spec": subtask}
+                    print(f"  Subtask {i+1}/{len(plan_tasks)}: {subtask[:80]}...")
+                    sub_result = self.execute_with_judge(
+                        task_id=sub_id,
+                        context=sub_context,
+                        task_type="code",
+                        tiers=tiers,
+                        max_retries_per_tier=max_retries_per_tier,
+                        judge_model=judge_model,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    results.append(sub_result)
+                    total_attempts += sub_result.get("attempts_total", 0)
+                    total_duration += sub_result.get("duration_seconds", 0)
+                    if not sub_result["success"]:
+                        return {
+                            "task_id": task_id, "success": False,
+                            "output": f"Subtask {i+1} failed: {sub_result.get('output', '')}",
+                            "error": f"Subtask {i+1}/{len(plan_tasks)} failed",
+                            "attempts_total": total_attempts,
+                            "duration_seconds": total_duration,
+                            "escalation_path": [f"subtask-{i+1}-failed"],
+                            "subtask_results": results,
+                        }
+                combined_output = "\n\n".join(
+                    f"--- Subtask {i+1} ---\n{r.get('output', '')}"
+                    for i, r in enumerate(results)
+                )
+                return {
+                    "task_id": task_id, "success": True,
+                    "output": combined_output,
+                    "tier_used": "planned-decomposition",
+                    "attempts_total": total_attempts,
+                    "duration_seconds": total_duration,
+                    "escalation_path": ["planned-decomposition"],
+                    "subtask_count": len(plan_tasks),
+                    "subtask_results": results,
+                }
+            # If plan produced a single task, fall through to normal code execution
+            # with the plan as coaching context
+            if plan_tasks:
+                context["task_spec"] = plan_tasks[0]
+            print("Plan-first: single task — falling through to normal code execution")
 
         # Check for fail-now signal
         fail_now_tier = get_fail_now()
@@ -1089,13 +1225,28 @@ class LLMOrchestrator:
 
                 if not result["success"]:
                     if self.pi_models.get(tier.lower()):
-                        print(f"Tier {tier} PI hard failure: {result.get('error', 'unknown')}")
+                        error_msg = result.get('error', 'unknown')
+                        stderr_tail = str(result.get('stderr', ''))[-200:] if result.get('stderr') else ''
+                        print(f"Tier {tier} PI hard failure (attempt {retry_num}/{max_retries_per_tier}): {error_msg}")
                         if result.get("exit_code"):
-                            print(f"Tier {tier} PI exited {result.get('exit_code', '?')} — "
-                                  f"{result.get('error', '')}")
+                            print(f"Tier {tier} PI exited {result.get('exit_code', '?')} — {error_msg}")
+                        if stderr_tail:
+                            print(f"Tier {tier} PI stderr tail: {stderr_tail}")
+                        # Don't escalate immediately — retry within this tier with coaching
+                        # Only unrecoverable failures (PI not installed) skip retry
+                        if retry_num < max_retries_per_tier and error_msg != "PI not installed":
+                            feedback = (
+                                f"PI PROCESS FAILURE (attempt {retry_num}): {error_msg}. "
+                                "Your previous attempt produced no output or crashed. "
+                                "Simplify the task — write fewer files at once, "
+                                "reduce individual file sizes, or split into smaller sub-tasks. "
+                                "Try again with a simpler approach."
+                            )
+                            continue  # retry within same tier
+                        # Exhausted retries or unrecoverable — fall through to next tier
                     else:
                         print(f"Tier {tier} HTTP failure: {result.get('error', 'unknown')}")
-                    break
+                        break
 
                 # --- Tool execution ---
                 if self.pi_models.get(tier.lower()) and "written_paths" in result:

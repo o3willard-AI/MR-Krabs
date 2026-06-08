@@ -25,6 +25,32 @@ traditional coding agents:
 - **PI writes files to the project root.** All file paths are relative to the
   project directory. PI creates parent directories automatically.
 
+### Size Limits (Judge-Enforced)
+
+The quality judge WILL REJECT your plan if any individual coder task exceeds:
+
+| Limit | Value | Rationale |
+|-------|-------|-----------|
+| **Task spec size** | 3 KB | PI's write tool has a content cap — larger tasks get truncated |
+| **Files per task** | 5 | More files → higher chance of partial writes and truncation |
+| **Test functions per task** | 8 | Large test files (>8 functions) reliably hit the write-tool cap |
+
+A task that creates 11 tests in a single file WILL FAIL. Split it into
+two tasks: Task A creates the first 6 tests, Task B creates the remaining 5.
+The judge checks this and will send your plan back with specific split instructions.
+
+### How the Judge Evaluates Plans
+
+After you produce a plan, a quality judge evaluates it. The judge checks:
+- **coder_task_size**: Every task within limits (KB, files, tests)
+- **atomicity**: Each task is self-contained and testable
+- **file_specificity**: Exact file paths, not vague descriptions
+- **dependency_correctness**: Tasks ordered so dependencies exist before use
+
+If any coder task exceeds size limits, the judge will reject the plan with
+a specific critique like: "Task 3 has 11 test functions — split into Task 3(a)
+with 6 tests and Task 3(b) with 5 tests." Use that feedback to decompose further.
+
 ## Tools
 - `file_read("path")` — read existing code to understand current
   architecture, patterns, and constraints. Always survey the codebase

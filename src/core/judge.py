@@ -21,7 +21,7 @@ import requests
 
 from src.core.constants import JUDGE_MAX_TOKENS, OPENROUTER_REFERER
 from src.core.model_config import get_models
-from src.core.judge_criteria import CODE_CRITERIA, QA_CRITERIA, PLAN_CRITERIA, detect_task_type
+from src.core.judge_criteria import CODE_CRITERIA, QA_CRITERIA, PLAN_CRITERIA, detect_task_type, MAX_CODER_TASK_KB, MAX_CODER_TASK_FILES, MAX_CODER_TASK_TESTS
 from src.core.model_profiles import get_known_failures, KnownFailure
 
 
@@ -149,6 +149,24 @@ code would not run or would produce wrong output, score it below 0.3.
 
 {criteria_list}
 
+## Coder Task Size Limits (for plan evaluations ONLY)
+
+When evaluating a PLAN (not code), you MUST check that each coder task is
+small enough for the PI coding agent to execute successfully:
+
+- Each coder task MUST be under {MAX_CODER_TASK_KB}KB (about 750 words of instruction)
+- Each coder task MUST create/modify at most {MAX_CODER_TASK_FILES} files
+- Each coder task MUST contain at most {MAX_CODER_TASK_TESTS} test functions
+- Multi-file tasks with 5+ files or large test suites MUST be split further
+
+If any task in the plan exceeds these limits, REJECT the plan with score < 0.4.
+In your critique, specify exactly WHICH task is too large and HOW to split it.
+
+These limits exist because PI's write tool has a content cap — oversized
+tasks get truncated and produce broken code. A plan that looks good but
+exceeds these limits WILL fail when executed. Rejecting it here saves
+cycles. Size violations are NOT \"minor issues\" — score them as major.
+
 ## Coaching Reply (CRITICAL)
 
 When the output is rejected (score < 0.7), your critique must be a coaching
@@ -191,6 +209,9 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
         else:
             # Default template — uses .replace() so only {criteria_list} is replaced
             prompt = prompt_template.replace('{criteria_list}', criteria_list)
+            prompt = prompt.replace('{MAX_CODER_TASK_KB}', str(MAX_CODER_TASK_KB))
+            prompt = prompt.replace('{MAX_CODER_TASK_FILES}', str(MAX_CODER_TASK_FILES))
+            prompt = prompt.replace('{MAX_CODER_TASK_TESTS}', str(MAX_CODER_TASK_TESTS))
             # ── Known failure patterns ─────────────────────────────────
             if model_profile_key:
                 known = get_known_failures(model_profile_key)
