@@ -56,7 +56,7 @@ class TestJudgeEscalation(unittest.TestCase):
         }
 
         with patch.object(Judge, "evaluate", return_value=Verdict(
-            accepted=True, score=0.9, critique="Good work",
+            accepted=True, provisional=False, score=0.9, critique="Good work",
             checks_passed=["correctness"], checks_failed=[],
         )):
             result = self.orchestrator.execute_with_judge(
@@ -83,9 +83,9 @@ class TestJudgeEscalation(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="Needs improvement",
+            Verdict(accepted=False, provisional=False, score=0.3, critique="Needs improvement",
                     checks_passed=[], checks_failed=["correctness"]),
-            Verdict(accepted=True, score=0.9, critique="Good work",
+            Verdict(accepted=True, provisional=False, score=0.9, critique="Good work",
                     checks_passed=["correctness"], checks_failed=[]),
         ]
 
@@ -115,10 +115,10 @@ class TestJudgeEscalation(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="Bad 1", checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=False, score=0.4, critique="Bad 2", checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=False, score=0.2, critique="Bad 3", checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=True, score=0.9, critique="Good!", checks_passed=["c"], checks_failed=[]),
+            Verdict(accepted=False, provisional=False, score=0.3, critique="Bad 1", checks_passed=[], checks_failed=["c"]),
+            Verdict(accepted=False, provisional=False, score=0.4, critique="Bad 2", checks_passed=[], checks_failed=["c"]),
+            Verdict(accepted=False, provisional=False, score=0.2, critique="Bad 3", checks_passed=[], checks_failed=["c"]),
+            Verdict(accepted=True, provisional=False, score=0.9, critique="Good!", checks_passed=["c"], checks_failed=[]),
         ]
 
         with patch.object(Judge, "evaluate", side_effect=verdicts):
@@ -147,7 +147,7 @@ class TestJudgeEscalation(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="nope", checks_passed=[], checks_failed=["c"])
+            Verdict(accepted=False, provisional=False, score=0.3, critique="nope", checks_passed=[], checks_failed=["c"])
             for _ in range(6)
         ]
 
@@ -175,7 +175,7 @@ class TestJudgeEscalation(unittest.TestCase):
         ]
 
         with patch.object(Judge, "evaluate", return_value=Verdict(
-            accepted=True, score=0.9, critique="ok", checks_passed=[], checks_failed=[],
+            accepted=True, provisional=False, score=0.9, critique="ok", checks_passed=[], checks_failed=[],
         )) as mock_judge:
             result = self.orchestrator.execute_with_judge(
                 task_id="test_task", context={"task_spec": "Test task"},
@@ -201,9 +201,9 @@ class TestJudgeEscalation(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="ADD MORE DETAIL",
+            Verdict(accepted=False, provisional=False, score=0.3, critique="ADD MORE DETAIL",
                     checks_passed=[], checks_failed=["correctness"]),
-            Verdict(accepted=True, score=0.9, critique="Good", checks_passed=[], checks_failed=[]),
+            Verdict(accepted=True, provisional=False, score=0.9, critique="Good", checks_passed=[], checks_failed=[]),
         ]
 
         with patch.object(Judge, "evaluate", side_effect=verdicts):
@@ -234,7 +234,7 @@ class TestJudgeEscalation(unittest.TestCase):
         }
 
         with patch.object(Judge, "evaluate", return_value=Verdict(
-            accepted=True, score=0.9, critique="ok", checks_passed=[], checks_failed=[],
+            accepted=True, provisional=False, score=0.9, critique="ok", checks_passed=[], checks_failed=[],
         )):
             self.orchestrator.execute_with_judge(
                 task_id="test_task", context={"task_spec": "Test task"},
@@ -256,7 +256,7 @@ class TestJudgeEscalation(unittest.TestCase):
         }
 
         with patch.object(Judge, "evaluate", return_value=Verdict(
-            accepted=True, score=0.9, critique="Good", checks_passed=[], checks_failed=[],
+            accepted=True, provisional=False, score=0.9, critique="Good", checks_passed=[], checks_failed=[],
         )):
             result = self.orchestrator.execute_with_judge(
                 task_id="test_task", context={"task_spec": "Test task"},
@@ -285,10 +285,10 @@ class TestJudgeEscalation(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="no", checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=False, score=0.3, critique="no", checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=False, score=0.3, critique="no", checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=True, score=0.9, critique="yes", checks_passed=["c"], checks_failed=[]),
+            Verdict(accepted=False, provisional=False, score=0.3, critique="no", checks_passed=[], checks_failed=["c"]),
+            Verdict(accepted=False, provisional=False, score=0.3, critique="no", checks_passed=[], checks_failed=["c"]),
+            Verdict(accepted=False, provisional=False, score=0.3, critique="no", checks_passed=[], checks_failed=["c"]),
+            Verdict(accepted=True, provisional=False, score=0.9, critique="yes", checks_passed=["c"], checks_failed=[]),
         ]
 
         with patch.object(Judge, "evaluate", side_effect=verdicts):
@@ -325,7 +325,7 @@ class TestJudgeEscalation(unittest.TestCase):
             if judge_calls[0] <= 3:
                 raise RuntimeError("Judge API down")
             return Verdict(
-                accepted=True, score=0.9, critique="ok",
+                accepted=True, provisional=False, score=0.9, critique="ok",
                 checks_passed=["c"], checks_failed=[],
             )
 
@@ -352,9 +352,9 @@ class TestJudgeEscalation(unittest.TestCase):
 
         # First rejected, second accepted
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="Tool exec failed",
+            Verdict(accepted=False, provisional=False, score=0.3, critique="Tool exec failed",
                     checks_passed=[], checks_failed=["tool"]),
-            Verdict(accepted=True, score=0.9, critique="ok", checks_passed=["c"], checks_failed=[]),
+            Verdict(accepted=True, provisional=False, score=0.9, critique="ok", checks_passed=["c"], checks_failed=[]),
         ]
 
         with patch.object(Judge, "evaluate", side_effect=verdicts):
@@ -378,7 +378,7 @@ class TestJudgeEscalation(unittest.TestCase):
         }
 
         with patch.object(Judge, "evaluate", return_value=Verdict(
-            accepted=True, score=0.9, critique="ok", checks_passed=[], checks_failed=[],
+            accepted=True, provisional=False, score=0.9, critique="ok", checks_passed=[], checks_failed=[],
         )) as mock_judge:
             result = self.orchestrator.execute_with_judge(
                 task_id="bare_task", context={},
@@ -401,8 +401,8 @@ class TestJudgeEscalation(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="no", checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=True, score=0.9, critique="yes", checks_passed=["c"], checks_failed=[]),
+            Verdict(accepted=False, provisional=False, score=0.3, critique="no", checks_passed=[], checks_failed=["c"]),
+            Verdict(accepted=True, provisional=False, score=0.9, critique="yes", checks_passed=["c"], checks_failed=[]),
         ]
 
         with patch.object(Judge, "evaluate", side_effect=verdicts):

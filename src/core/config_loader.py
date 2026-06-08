@@ -128,6 +128,9 @@ class MrKrabsConfig:
     tier_failure_actions: Dict[str, str] = field(default_factory=dict)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     profiles: Dict[str, ProfileConfig] = field(default_factory=dict)
+    pi_models: Dict[str, str] = field(default_factory=dict)
+    pi_timeouts: Dict[str, int] = field(default_factory=dict)
+    prompt_flow_debug: bool = False
     config_path: Optional[Path] = None
 
     # ── Lookup helpers ──────────────────────────────────────────────────
@@ -338,6 +341,9 @@ def load_config(path: Optional[str] = None) -> MrKrabsConfig:
     budget = _parse_budget(raw.get("budget", {}))
     profiles = _parse_profiles(raw.get("profiles", {}))
     tier_failure_actions = raw.get("tier_failure_actions", {})
+    pi_models = raw.get("pi_models", {})
+    pi_timeouts = raw.get("pi_timeouts", {})
+    prompt_flow_debug = raw.get("prompt_flow_debug", False)
 
     # Validate: every model's provider must be defined
     for key, model in models.items():
@@ -363,6 +369,9 @@ def load_config(path: Optional[str] = None) -> MrKrabsConfig:
         tier_failure_actions=tier_failure_actions,
         budget=budget,
         profiles=profiles,
+        pi_models=pi_models,
+        pi_timeouts=pi_timeouts,
+        prompt_flow_debug=prompt_flow_debug,
         config_path=config_path,
     )
 

@@ -45,7 +45,7 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         ]
 
         rejections = [
-            Verdict(accepted=False, score=0.3, critique="nope",
+            Verdict(accepted=False, provisional=False, score=0.3, critique="nope",
                     checks_passed=[], checks_failed=["c"])
             for _ in range(6)
         ]
@@ -123,9 +123,9 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="no",
+            Verdict(accepted=False, provisional=False, score=0.3, critique="no",
                     checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=True, score=0.9, critique="ok",
+            Verdict(accepted=True, provisional=False, score=0.9, critique="ok",
                     checks_passed=["c"], checks_failed=[]),
         ]
 
@@ -164,7 +164,7 @@ class TestOrchestratorStateMachine(unittest.TestCase):
              patch("src.core.orchestrator.clear_fail_up") as mock_clear, \
              patch("src.core.orchestrator.check_mesh_fail_up"), \
              patch.object(Judge, "evaluate", return_value=Verdict(
-                 accepted=True, score=0.9, critique="ok",
+                 accepted=True, provisional=False, score=0.9, critique="ok",
                  checks_passed=[], checks_failed=[],
              )):
             result = self.orchestrator.execute_with_judge(
@@ -196,9 +196,9 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="bad",
+            Verdict(accepted=False, provisional=False, score=0.3, critique="bad",
                     checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=True, score=0.9, critique="ok",
+            Verdict(accepted=True, provisional=False, score=0.9, critique="ok",
                     checks_passed=["c"], checks_failed=[]),
         ]
 
@@ -231,9 +231,9 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="no",
+            Verdict(accepted=False, provisional=False, score=0.3, critique="no",
                     checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=True, score=0.9, critique="yes",
+            Verdict(accepted=True, provisional=False, score=0.9, critique="yes",
                     checks_passed=["c"], checks_failed=[]),
         ]
 
@@ -263,9 +263,9 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="no",
+            Verdict(accepted=False, provisional=False, score=0.3, critique="no",
                     checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=True, score=0.9, critique="yes",
+            Verdict(accepted=True, provisional=False, score=0.9, critique="yes",
                     checks_passed=["c"], checks_failed=[]),
         ]
 
@@ -297,9 +297,9 @@ class TestOrchestratorStateMachine(unittest.TestCase):
         ]
 
         verdicts = [
-            Verdict(accepted=False, score=0.3, critique="no",
+            Verdict(accepted=False, provisional=False, score=0.3, critique="no",
                     checks_passed=[], checks_failed=["c"]),
-            Verdict(accepted=True, score=0.9, critique="yes",
+            Verdict(accepted=True, provisional=False, score=0.9, critique="yes",
                     checks_passed=["c"], checks_failed=[]),
         ]
 
@@ -331,7 +331,7 @@ class TestOrchestratorStateMachine(unittest.TestCase):
              patch("src.core.human_gate.write_pending_file"), \
              patch("src.core.human_gate.wait_for_human", return_value=(False, "user declined")), \
              patch.object(Judge, "evaluate", return_value=Verdict(
-                 accepted=False, score=0.3, critique="no",
+                 accepted=False, provisional=False, score=0.3, critique="no",
                  checks_passed=[], checks_failed=["c"],
              )):
             result = self.orchestrator.execute_with_judge(

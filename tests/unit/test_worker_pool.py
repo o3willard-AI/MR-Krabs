@@ -13,12 +13,12 @@ from src.core.worker_pool import TaskSpec, WorkerPool
 
 
 def _accept_verdict():
-    return Verdict(accepted=True, score=0.95, critique="Perfect",
+    return Verdict(accepted=True, provisional=False, score=0.95, critique="Perfect",
                    checks_passed=["correctness"], checks_failed=[])
 
 
 def _reject_verdict():
-    return Verdict(accepted=False, score=0.3, critique="needs work",
+    return Verdict(accepted=False, provisional=False, score=0.3, critique="needs work",
                    checks_passed=[], checks_failed=["correctness"])
 
 

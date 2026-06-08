@@ -15,6 +15,7 @@ class TestVerdict(unittest.TestCase):
         """Test creating a Verdict with all fields."""
         verdict = Verdict(
             accepted=True,
+            provisional=False,
             score=0.85,
             critique="Good implementation with minor improvements needed",
             checks_passed=["correctness", "completeness"],
@@ -31,6 +32,7 @@ class TestVerdict(unittest.TestCase):
         """Test creating a Verdict with default values."""
         verdict = Verdict(
             accepted=False,
+            provisional=False,
             score=0.0,
             critique="No critique provided",
             checks_passed=[],

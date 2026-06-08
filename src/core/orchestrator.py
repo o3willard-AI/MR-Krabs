@@ -682,13 +682,18 @@ class LLMOrchestrator:
 
         output = "\n".join(output_parts).strip()
         if not output:
-            return {
-                "success": False,
-                "error": "Empty output from PI",
-                "written_paths": written_paths,
-                "ready_for_escalation": True,
-                "duration_seconds": duration,
-            }
+            # PI may have written files via tool calls without leaving a final
+            # text summary — that's valid output, not an error.
+            if written_paths:
+                output = f"[Files written: {', '.join(written_paths)}]"
+            else:
+                return {
+                    "success": False,
+                    "error": "Empty output from PI",
+                    "written_paths": written_paths,
+                    "ready_for_escalation": True,
+                    "duration_seconds": duration,
+                }
 
         return {
             "success": True,
@@ -1090,7 +1095,7 @@ class LLMOrchestrator:
                 except Exception as e:
                     # Judge unavailable — degrade gracefully, treat as rejection
                     verdict = Verdict(
-                        accepted=False, score=0.0,
+                        accepted=False, provisional=False, score=0.0,
                         critique=f"Judge unavailable: {e}",
                         checks_passed=[], checks_failed=["judge_unavailable"],
                     )
@@ -1140,9 +1145,22 @@ class LLMOrchestrator:
                         "tool_results": tool_result,
                     }
 
+                if verdict.provisional:
+                    # Provisionally accepted — coder makes targeted corrections
+                    # and returns for one final evaluation. Don't count against
+                    # retry budget — this is a polish pass, not a rewrite.
+                    print(f"Tier {tier} provisional: {verdict.critique[:200]}")
+                    feedback = (
+                        "PROVISIONALLY ACCEPTED. Your code is substantially correct. "
+                        "Apply ONLY these targeted corrections — do NOT rewrite working code:\n\n"
+                        + verdict.critique
+                    )
+                    # Don't decrement retries_per_tier — provisional is a free revision
+                    continue
+
                 # Rejected — save feedback for next retry
                 feedback = verdict.critique
-                print(f"Tier {tier} retry {retry_num} rejected: {verdict.critique}")
+                print(f"Tier {tier} retry {retry_num} rejected: {verdict.critique[:200]}")
 
             # All retries exhausted for this tier (or fail_up aborted)
             if fail_up_aborted:

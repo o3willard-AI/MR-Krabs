@@ -30,8 +30,9 @@ class Verdict:
     """Represents the verdict from a judge evaluation."""
     
     accepted: bool
-    score: float          # 0.0 - 1.0
-    critique: str         # specific, actionable feedback with coaching  
+    provisional: bool       # True → accepted with minor corrections needed
+    score: float            # 0.0 - 1.0
+    critique: str           # specific, actionable feedback with coaching  
     checks_passed: List[str]
     checks_failed: List[str]
 
@@ -123,6 +124,23 @@ does not — provide specific, actionable coaching to help the assistant fix it.
 - 0.6-0.8: Mostly correct with minor issues (missed edge cases, style violations)
 - 0.9-1.0: Fully correct, handles edge cases, production-quality
 
+## Provisional Accept (score 0.75–0.85)
+
+When the output is substantially correct but has small, targeted issues
+(truncation, missing one edge case, minor oversight in one file), set
+`\"provisional\": true` and provide corrections. This tells the coder:
+\"Your work is good — don't rewrite it. Just apply these specific fixes.\"
+
+Provisional accept means:
+- The coder keeps its existing code and makes ONLY the corrections you list
+- The coder returns for final verification (one additional evaluation)
+- The total retry cost is minimal — a few lines, not a full rewrite
+
+Use provisional accept for: missing docstrings, missed edge case in one function,
+truncated output at the end of the last file, style violations in one file,
+a single missing import. Do NOT use it for: wrong architecture, missing whole
+files, code that doesn't compile, security vulnerabilities.
+
 IMPORTANT: Do NOT let the length of the output influence your score.
 A short, correct answer beats a long, incorrect one. Be strict: if the
 code would not run or would produce wrong output, score it below 0.3.
@@ -154,6 +172,7 @@ reply. "Missing edge cases" is not.
 Return ONLY valid JSON (no markdown, no explanation outside the JSON):
 {
   "score": 0.0,
+  "provisional": false,
   "critique": "COACHING REPLY: follow the 5-point structure above",
   "checks_passed": ["check_name"],
   "checks_failed": ["check_name"]
@@ -231,6 +250,7 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
             # Handle any errors in the LLM call
             return Verdict(
                 accepted=False,
+                provisional=False,
                 score=0.0,
                 critique=f"Judge unavailable: {str(e)}",
                 checks_passed=[],
@@ -243,6 +263,7 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
             if not raw_response or not isinstance(raw_response, str):
                 return Verdict(
                     accepted=False,
+                    provisional=False,
                     score=0.0,
                     critique=f"Judge returned empty or non-string response: {type(raw_response).__name__}",
                     checks_passed=[],
@@ -284,7 +305,7 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
                                 data = json.loads(repaired)
                             except (json.JSONDecodeError, ValueError):
                                 return Verdict(
-                                    accepted=False, score=0.0,
+                                    accepted=False, provisional=False, score=0.0,
                                     critique=f"Malformed JSON from judge: {stripped[:300]}",
                                     checks_passed=[], checks_failed=["json_parse_error"]
                                 )
@@ -301,7 +322,7 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
                             data = json.loads(repaired)
                         except (json.JSONDecodeError, ValueError):
                             return Verdict(
-                                accepted=False, score=0.0,
+                                accepted=False, provisional=False, score=0.0,
                                 critique=f"Malformed JSON from judge: {json_str[:300]}",
                                 checks_passed=[], checks_failed=["json_parse_error"]
                             )
@@ -318,6 +339,7 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
             # If JSON parsing fails, return default verdict with raw response as critique
             return Verdict(
                 accepted=False,
+                provisional=False,
                 score=0.0,
                 critique=f"Failed to parse judge response: {str(raw_response)[:200]}",
                 checks_passed=[],
@@ -331,12 +353,19 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
             critique = str(data.get("critique", "No critique provided"))
             checks_passed = list(data.get("checks_passed", [])) if data.get("checks_passed") is not None else []
             checks_failed = list(data.get("checks_failed", [])) if data.get("checks_failed") is not None else []
-            
-            # Apply acceptance threshold - override the LLM's accepted value
+                
+            # Extract provisional flag — score 0.75-0.85 auto-triggers provisional
+            # unless the LLM explicitly set it
+            provisional = bool(data.get("provisional", False))
+            if not provisional and 0.75 <= score < self.acceptance_threshold:
+                provisional = True
+                
+            # Apply acceptance threshold
             accepted = score >= self.acceptance_threshold
-            
+                
             verdict = Verdict(
                 accepted=accepted,
+                provisional=provisional,
                 score=score,
                 critique=critique,
                 checks_passed=checks_passed,
@@ -352,6 +381,7 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
             # If data structure is malformed, return default verdict
             return Verdict(
                 accepted=False,
+                provisional=False,
                 score=0.0,
                 critique=f"Malformed judge response: {raw_response}",
                 checks_passed=[],

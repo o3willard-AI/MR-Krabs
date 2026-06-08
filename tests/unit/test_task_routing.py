@@ -141,7 +141,7 @@ class TestOrchestratorPromptRouting(unittest.TestCase):
 
         from src.core.judge import Judge, Verdict
         with patch.object(Judge, "evaluate", return_value=Verdict(
-            accepted=True, score=0.9, critique="Good plan",
+            accepted=True, provisional=False, score=0.9, critique="Good plan",
             checks_passed=[], checks_failed=[],
         )):
             result = orch.execute_with_judge(
@@ -170,7 +170,7 @@ class TestOrchestratorPromptRouting(unittest.TestCase):
 
         from src.core.judge import Judge, Verdict
         with patch.object(Judge, "evaluate", return_value=Verdict(
-            accepted=True, score=0.9, critique="Good code",
+            accepted=True, provisional=False, score=0.9, critique="Good code",
             checks_passed=[], checks_failed=[],
         )):
             result = orch.execute_with_judge(

@@ -23,7 +23,7 @@ class TestOrchestratorTimeout:
     
     def test_orchestrator_timeout_integration(self, orchestrator):
         """Test that orchestrator respects timeout settings."""
-        accept = Verdict(accepted=True, score=0.9, critique="ok", checks_passed=[], checks_failed=[])
+        accept = Verdict(accepted=True, provisional=False, score=0.9, critique="ok", checks_passed=[], checks_failed=[])
         with patch.object(orchestrator, '_get_agent_system_prompt', return_value="mock template"), \
              patch.object(orchestrator, 'call_llm_with_retry') as mock_call, \
              patch('src.core.orchestrator.Judge.evaluate', return_value=accept):
@@ -39,7 +39,7 @@ class TestOrchestratorTimeout:
     
     def test_orchestrator_normal_execution(self, orchestrator):
         """Test that normal execution works without timeout."""
-        accept = Verdict(accepted=True, score=0.9, critique="ok", checks_passed=[], checks_failed=[])
+        accept = Verdict(accepted=True, provisional=False, score=0.9, critique="ok", checks_passed=[], checks_failed=[])
         with patch.object(orchestrator, '_get_agent_system_prompt', return_value="mock template"), \
              patch.object(orchestrator, 'call_llm_with_retry') as mock_call, \
              patch('src.core.orchestrator.Judge.evaluate', return_value=accept):
