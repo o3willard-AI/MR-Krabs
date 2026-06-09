@@ -1124,6 +1124,7 @@ class LLMOrchestrator:
         retries_per_tier: dict[str, int] = {}
         escalation_path: list[str] = []
         best_output: dict[str, Any] = {}  # best output across all tiers for Principal handoff
+        accumulated_files: dict[str, int] = {}  # path → bytes from completed tiers (R1 incremental pass-through)
         verdict = None  # initialized before retry loop; set by judge evaluation
 
         for tier in tiers:
@@ -1200,6 +1201,24 @@ class LLMOrchestrator:
 
                 user_prompt = context.get("task_spec", task_id)
 
+                # ── R1: Incremental pass-through ──────────────────────
+                # On the first attempt of a new tier (not a retry within
+                # the same tier), inject the list of files already
+                # completed by previous tiers so the coder doesn't
+                # rewrite them.
+                if retry_num == 1 and accumulated_files:
+                    done_list = "\n".join(
+                        f"- {p} ({b} bytes) — COMPLETED, DO NOT REWRITE"
+                        for p, b in sorted(accumulated_files.items())
+                    )
+                    user_prompt = (
+                        f"## Files Already Completed by Previous Tiers\n\n"
+                        f"The following files have already been written correctly. "
+                        f"DO NOT modify or rewrite them. Focus ONLY on files "
+                        f"NOT listed here.\n\n{done_list}\n\n"
+                        f"## Task\n\n{user_prompt}"
+                    )
+
                 # ── Model profile: inject prepend prompt ──────────────
                 model_key = tier_config.get("profile")
                 if model_key:
@@ -1266,12 +1285,15 @@ class LLMOrchestrator:
                     for p in pi_paths:
                         try:
                             content = self.file_tools.file_read(p)
+                            bytelen = len(content.get("content", ""))
                             tool_result["results"].append({
                                 "tool": "file_write", "path": p,
                                 "success": content.get("success", False),
                                 "content": content.get("content", "")[:2000],
-                                "bytes": len(content.get("content", "")),
+                                "bytes": bytelen,
                             })
+                            # R1: track in accumulated_files for next tier's handoff
+                            accumulated_files[p] = bytelen
                         except Exception:
                             tool_result["results"].append({"tool": "file_write", "path": p, "success": False})
                 else:
