@@ -28,6 +28,11 @@ from src.core.prompt_flow_logger import PromptFlowLogger
 # Configuration
 MAX_RETRIES = 3
 RETRY_DELAY = 2
+
+# Unbuffer stdout so pipeline progress is visible in background/piped mode
+import builtins as _bi
+print = lambda *a, **kw: _bi.print(*a, **{**kw, "flush": True})
+
 CONTEXT_SIMPLIFICATION = [1.0, 0.7, 0.4]
 
 # Import the capability checker
@@ -516,10 +521,14 @@ class LLMOrchestrator:
         ]
 
         try:
-            # Read max_tokens from tier config, default to 4096
+            # Read max_tokens and stop tokens from tier config
             tier_cfg = self.provider_router._tiers.get(tier, {})
             max_tok = tier_cfg.get("max_tokens", 4096)
-            response = adapter.call_sync(messages, temperature=temperature, max_tokens=max_tok)
+            stop = tier_cfg.get("stop")
+            kwargs = {"temperature": temperature, "max_tokens": max_tok}
+            if stop is not None:
+                kwargs["stop"] = stop
+            response = adapter.call_sync(messages, **kwargs)
             content = response.content
 
             # Phase 3: store in cache
