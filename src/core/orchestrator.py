@@ -1010,6 +1010,16 @@ class LLMOrchestrator:
         pi_system_prompt = self._get_pi_system_prompt(task_type)
 
         # ── Pre-flight planning (plan_first) ───────────────────────────
+        # B2/R5: Auto-trigger planner for oversized tasks.
+        # PI's write tool has a content cap — tasks >3KB reliably cause
+        # truncation or empty output at L0. Decompose automatically.
+        if not plan_first and task_type == "code":
+            task_spec_str = str(context.get("task_spec", ""))
+            if len(task_spec_str) > 3000:
+                print(f"Task size ({len(task_spec_str)} chars) exceeds L0 "
+                      f"threshold (3000) — auto-enabling planner")
+                plan_first = True
+
         if plan_first and task_type == "code":
             plan_wf = self.workflows.get("plan")
             plan_tiers = plan_wf.tiers if plan_wf else ["l0-planner", "principal"]
