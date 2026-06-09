@@ -575,6 +575,7 @@ class LLMOrchestrator:
         user_prompt: str,
         system_prompt: str = "",
         retry_num: int = 1,
+        project_root: str | None = None,
     ) -> dict[str, Any]:
         """Execute a coder tier through PI subprocess (--mode json).
 
@@ -583,6 +584,9 @@ class LLMOrchestrator:
             user_prompt: The task specification / user message.
             system_prompt: Quality directives appended via --append-system-prompt.
             retry_num: Which retry attempt this is (for logging).
+            project_root: Working directory for PI — file paths in the task
+                spec are relative to this directory. If None, uses the
+                orchestrator's CWD (typically the MR-Krabs repo).
 
         Returns:
             Dict matching call_llm_with_retry() shape:
@@ -622,6 +626,7 @@ class LLMOrchestrator:
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                cwd=project_root,
             )
         except subprocess.TimeoutExpired:
             return {
@@ -962,6 +967,7 @@ class LLMOrchestrator:
         judge_model: str = "Judge",
         timeout_seconds: float = 300,
         plan_first: bool = False,
+        project_root: str | None = None,
     ) -> dict[str, Any]:
         """Execute a task using Judge-based retry/escalation logic.
 
@@ -972,6 +978,9 @@ class LLMOrchestrator:
                 then execute each subtask through the coder tiers. The plan
                 judge enforces coder_task_size limits (3KB, 5 files, 8 tests).
                 Use this for tasks that may exceed PI's single-invocation limits.
+            project_root: Working directory for PI subprocess. File paths in
+                the task spec resolve relative to this directory. If None,
+                uses the orchestrator's CWD (MR-Krabs repo).
 
         For each tier, calls the LLM up to max_retries_per_tier times.
         After each call, a Judge (LLM-powered) evaluates the output quality.
@@ -1007,7 +1016,7 @@ class LLMOrchestrator:
                 tiers=plan_tiers,
                 max_retries_per_tier=plan_retries,
                 judge_model=plan_judge,
-                timeout_seconds=timeout_seconds,
+                project_root=project_root,
             )
             if not plan_result["success"]:
                 return {
@@ -1035,7 +1044,7 @@ class LLMOrchestrator:
                         tiers=tiers,
                         max_retries_per_tier=max_retries_per_tier,
                         judge_model=judge_model,
-                        timeout_seconds=timeout_seconds,
+                        project_root=project_root,
                     )
                     results.append(sub_result)
                     total_attempts += sub_result.get("attempts_total", 0)
@@ -1212,6 +1221,7 @@ class LLMOrchestrator:
                         str(user_prompt),
                         system_prompt=pi_system_prompt,
                         retry_num=retry_num,
+                        project_root=project_root,
                     )
                 else:
                     result = self.call_llm_with_retry(

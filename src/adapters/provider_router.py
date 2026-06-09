@@ -1,7 +1,7 @@
 """Maps MR-Krabs tier names to provider adapter instances.
 
 Each tier in MODELS maps to either:
-- An OpenAI-compatible provider (openrouter, lmstudio) → OpenAICompatibleAdapter
+- An OpenAI-compatible provider (openrouter, lmstudio, litellm) → OpenAICompatibleAdapter
 - A custom provider with its own adapter class (future: anthropic, vertex, etc.)
 - Principal tier → returns None (no LLM call)
 """
@@ -17,8 +17,15 @@ class ProviderRouter:
 
     def __init__(self):
         from src.core.model_config import get_models
+        from src.core.config_loader import get_config
+
         self._tiers = get_models()
         self._adapters: Dict[str, LiteLLMAdapter] = {}
+        # Load provider-level config for base_url fallback
+        try:
+            self._provider_cfgs = get_config().providers
+        except Exception:
+            self._provider_cfgs = {}
 
     def get_adapter(self, tier: str) -> Optional[LiteLLMAdapter]:
         """Get or create adapter for a tier. Returns None for Principal/non-LLM tiers."""
@@ -34,7 +41,17 @@ class ProviderRouter:
         base_url = config.get("base_url", "")
         env_var = config.get("env_var", "")
 
-        if provider in ("openrouter", "lmstudio"):
+        # Fall back to provider-level config for base_url and env_var
+        if not base_url and provider in self._provider_cfgs:
+            pcfg = self._provider_cfgs[provider]
+            base_url = getattr(pcfg, "base_url", "") or ""
+        if not env_var and provider in self._provider_cfgs:
+            pcfg = self._provider_cfgs[provider]
+            penv = getattr(pcfg, "api_key_env", None)
+            if penv:
+                env_var = penv
+
+        if provider in ("openrouter", "lmstudio", "litellm"):
             adapter = OpenAICompatibleAdapter(
                 config={"base_url": base_url, "api_key_env": env_var},
                 name=f"{provider}-{model}",
