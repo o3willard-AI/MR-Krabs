@@ -680,6 +680,14 @@ class LLMOrchestrator:
             cleanup_sp = None
 
         start_time = time.monotonic()
+
+        # L1/L2 diagnostic: log model + prompt size for cloud tier debugging
+        if tier.lower().startswith("l1") or tier.lower().startswith("l2"):
+            print(f"  [DIAG] {tier} r{retry_num}: model={model_spec}, "
+                  f"prompt={len(user_prompt)}chars, "
+                  f"sys_prompt={len(system_prompt)}chars, "
+                  f"cmd={' '.join(pi_cmd[:4])}...")
+
         try:
             proc = subprocess.run(
                 pi_cmd,
@@ -861,8 +869,26 @@ class LLMOrchestrator:
         if not output:
             # PI may have written files via tool calls without leaving a final
             # text summary — that's valid output, not an error.
+            # Salvage: accept written files rather than discarding all work.
             if written_paths:
-                output = f"[Files written: {', '.join(written_paths)}]"
+                print(f"  Truncation detected — salvaged {len(written_paths)} files: "
+                      f"{', '.join(written_paths[:5])}"
+                      f"{'...' if len(written_paths) > 5 else ''}")
+                output = f"[Truncated — {len(written_paths)} files salvaged: {', '.join(written_paths)}]"
+                if cleanup_sp:
+                    try:
+                        os.unlink(cleanup_sp)
+                    except OSError:
+                        pass
+                return {
+                    "success": True,
+                    "output": output,
+                    "attempt": retry_num,
+                    "duration_seconds": duration,
+                    "written_paths": written_paths,
+                    "partial": True,  # Flag for caller: more files may remain
+                    "ready_for_escalation": False,
+                }
             else:
                 if cleanup_sp:
                     try:
