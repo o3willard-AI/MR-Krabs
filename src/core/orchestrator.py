@@ -24,6 +24,12 @@ from src.core.model_profiles import get_prepend, get_known_failures
 
 # Prompt flow debug logger (opt-in via MRKRABS_PROMPT_FLOW_DEBUG=1)
 from src.core.prompt_flow_logger import PromptFlowLogger
+from src.core.task_splitter import (
+    extract_file_refs,
+    split_into_passes,
+    generate_subtask_spec,
+    MAX_FILES_PER_PASS,
+)
 
 # Configuration
 MAX_RETRIES = 3
@@ -1084,6 +1090,92 @@ class LLMOrchestrator:
                 tasks.append(task_spec)
         return tasks
 
+    def _execute_multi_pass(
+        self,
+        task_id: str,
+        original_spec: str,
+        passes: list,
+        file_refs: list,
+        tiers: list[str],
+        max_retries_per_tier: int,
+        judge_model: str,
+        project_root: str | None,
+        timeout_seconds: float = 300,
+    ) -> dict[str, Any]:
+        """Execute a large task split across multiple sequential PI passes.
+
+        Each pass gets a focused sub-task spec listing only its files.
+        Written files accumulate and are excluded from later passes.
+        If any pass fails, remaining passes are aborted.
+        """
+        accumulated_files: list[str] = []
+        results = []
+        total_attempts = 0
+        total_duration = 0.0
+
+        for subtask in passes:
+            spec = generate_subtask_spec(
+                original_spec, subtask, subtask.pass_num,
+                len(passes), accumulated_files,
+            )
+            sub_id = f"{task_id}-p{subtask.pass_num}"
+
+            print(f"  Pass {subtask.pass_num}/{len(passes)}: "
+                  f"{len(subtask.files)} files ["
+                  f"{', '.join(f.path for f in subtask.files[:3])}"
+                  f"{'...' if len(subtask.files) > 3 else ''}]")
+
+            sub_result = self.execute_with_judge(
+                task_id=sub_id,
+                context={"task_spec": spec},
+                task_type="code",
+                tiers=tiers,
+                max_retries_per_tier=max_retries_per_tier,
+                judge_model=judge_model,
+                project_root=project_root,
+                timeout_seconds=timeout_seconds,
+                plan_first=False,  # Already split
+            )
+
+            results.append(sub_result)
+            total_attempts += sub_result.get("attempts_total", 0)
+            total_duration += sub_result.get("duration_seconds", 0)
+
+            if not sub_result["success"]:
+                return {
+                    "task_id": task_id, "success": False,
+                    "output": f"Pass {subtask.pass_num} failed",
+                    "error": sub_result.get("error", "unknown"),
+                    "attempts_total": total_attempts,
+                    "duration_seconds": total_duration,
+                    "pass_results": results,
+                }
+
+            # Accumulate files written in this pass
+            if sub_result.get("files"):
+                accumulated_files.extend(sub_result["files"].keys())
+            elif sub_result.get("written_paths"):
+                accumulated_files.extend(sub_result["written_paths"])
+
+        # Merge pass results
+        all_files = {}
+        all_outputs = []
+        for r in results:
+            if r.get("files"):
+                all_files.update(r["files"])
+            all_outputs.append(r.get("output", ""))
+
+        return {
+            "task_id": task_id, "success": True,
+            "output": "\n\n".join(all_outputs),
+            "files": all_files,
+            "tier_used": results[-1].get("tier_used"),
+            "attempts_total": total_attempts,
+            "duration_seconds": total_duration,
+            "pass_count": len(passes),
+            "pass_results": results,
+        }
+
     def execute_with_judge(
         self,
         task_id: str,
@@ -1131,94 +1223,29 @@ class LLMOrchestrator:
         # auto-enabled on failure it writes to the right directory.
         self._prompt_flow_logger.task_id = task_id
 
-        # ── Pre-flight planning (plan_first) ───────────────────────────
-        # B2/R5: Auto-trigger planner for oversized tasks.
-        # PI's write tool has a content cap — tasks >3KB reliably cause
-        # truncation or empty output at L0. Decompose automatically.
-        if not plan_first and task_type == "code":
-            task_spec_str = str(context.get("task_spec", ""))
-            if len(task_spec_str) > 3000:
-                print(f"Task size ({len(task_spec_str)} chars) exceeds L0 "
-                      f"threshold (3000) — auto-enabling planner")
-                plan_first = True
-
-        if plan_first and task_type == "code":
-            plan_wf = self.workflows.get("plan")
-            plan_tiers = plan_wf.tiers if plan_wf else ["l0-planner", "principal"]
-            plan_judge = plan_wf.judge_model if plan_wf else judge_model
-            plan_retries = plan_wf.max_retries_per_tier if plan_wf else max_retries_per_tier
-            plan_task = f"Decompose into subtasks: {str(context.get('task_spec', task_id))}"
-            plan_context = {"task_spec": plan_task}
-            print(f"Plan-first: decomposing task with {plan_tiers[0]} (judge={plan_judge})")
-            plan_result = self.execute_with_judge(
-                task_id=f"{task_id}-plan",
-                context=plan_context,
-                task_type="plan",
-                tiers=plan_tiers,
-                max_retries_per_tier=plan_retries,
-                judge_model=plan_judge,
-                project_root=project_root,
-            )
-            if not plan_result["success"]:
-                return {
-                    "task_id": task_id, "success": False,
-                    "output": plan_result.get("output", ""),
-                    "error": f"Plan decomposition failed: {plan_result.get('verdict', {}).get('critique', 'unknown')}",
-                    "attempts_total": plan_result.get("attempts_total", 0),
-                    "duration_seconds": plan_result.get("duration_seconds", 0),
-                    "escalation_path": ["plan-failed"],
-                }
-            plan_tasks = self._split_plan_into_tasks(plan_result["output"])
-            if plan_tasks and len(plan_tasks) > 1:
-                print(f"Plan-first: executing {len(plan_tasks)} subtasks")
-                results = []
-                total_attempts = plan_result.get("attempts_total", 0)
-                total_duration = plan_result.get("duration_seconds", 0)
-                for i, subtask in enumerate(plan_tasks):
-                    sub_id = f"{task_id}-sub{i+1}"
-                    sub_context = {"task_spec": subtask}
-                    print(f"  Subtask {i+1}/{len(plan_tasks)}: {subtask[:80]}...")
-                    sub_result = self.execute_with_judge(
-                        task_id=sub_id,
-                        context=sub_context,
-                        task_type="code",
+        # ── Multi-pass detection ───────────────────────────
+        # Replace LLM planner with deterministic file splitter.
+        # Tasks with >MAX_FILES_PER_PASS file references are split
+        # into sequential PI passes with accumulated state.
+        task_spec_str = str(context.get("task_spec", ""))
+        if task_type == "code" and task_spec_str:
+            file_refs = extract_file_refs(task_spec_str)
+            if len(file_refs) > MAX_FILES_PER_PASS or plan_first:
+                passes = split_into_passes(file_refs)
+                if len(passes) > 1:
+                    print(f"Multi-pass: {len(file_refs)} files → "
+                          f"{len(passes)} passes (max {MAX_FILES_PER_PASS}/pass)")
+                    return self._execute_multi_pass(
+                        task_id=task_id,
+                        original_spec=task_spec_str,
+                        passes=passes,
+                        file_refs=file_refs,
                         tiers=tiers,
                         max_retries_per_tier=max_retries_per_tier,
                         judge_model=judge_model,
                         project_root=project_root,
+                        timeout_seconds=timeout_seconds,
                     )
-                    results.append(sub_result)
-                    total_attempts += sub_result.get("attempts_total", 0)
-                    total_duration += sub_result.get("duration_seconds", 0)
-                    if not sub_result["success"]:
-                        return {
-                            "task_id": task_id, "success": False,
-                            "output": f"Subtask {i+1} failed: {sub_result.get('output', '')}",
-                            "error": f"Subtask {i+1}/{len(plan_tasks)} failed",
-                            "attempts_total": total_attempts,
-                            "duration_seconds": total_duration,
-                            "escalation_path": [f"subtask-{i+1}-failed"],
-                            "subtask_results": results,
-                        }
-                combined_output = "\n\n".join(
-                    f"--- Subtask {i+1} ---\n{r.get('output', '')}"
-                    for i, r in enumerate(results)
-                )
-                return {
-                    "task_id": task_id, "success": True,
-                    "output": combined_output,
-                    "tier_used": "planned-decomposition",
-                    "attempts_total": total_attempts,
-                    "duration_seconds": total_duration,
-                    "escalation_path": ["planned-decomposition"],
-                    "subtask_count": len(plan_tasks),
-                    "subtask_results": results,
-                }
-            # If plan produced a single task, fall through to normal code execution
-            # with the plan as coaching context
-            if plan_tasks:
-                context["task_spec"] = plan_tasks[0]
-            print("Plan-first: single task — falling through to normal code execution")
 
         # Check for fail-now signal
         fail_now_tier = get_fail_now()
