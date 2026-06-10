@@ -711,6 +711,20 @@ class LLMOrchestrator:
                     os.unlink(cleanup_sp)
                 except OSError:
                     pass
+            # R4: Log PI failure for debug
+            self._prompt_flow_logger.log(
+                agent=f"{tier}_retry{retry_num}",
+                input_text=(
+                    f"=== SYSTEM PROMPT ===\n{system_prompt}\n\n"
+                    f"=== USER PROMPT ===\n{user_prompt}\n\n"
+                    f"=== PI COMMAND ===\n{' '.join(pi_cmd)}"
+                ),
+                output_text=(
+                    f"exit_code={proc.returncode}\n"
+                    f"stderr={proc.stderr[:2000] if proc.stderr else '(none)'}\n"
+                    f"stdout={proc.stdout[:2000] if proc.stdout else '(empty)'}"
+                ),
+            )
             return {
                 "success": False,
                 "error": proc.stderr[:500] if proc.stderr else f"exit {proc.returncode}",
@@ -824,6 +838,18 @@ class LLMOrchestrator:
                         except Exception:
                             pass
                 tool_results.append({"tool": name, "args": args})
+
+        # R4: Dump PI input/output to debug dir when prompt flow logging is
+        # enabled (auto-enabled on first rejection, or manually via env var).
+        self._prompt_flow_logger.log(
+            agent=f"{tier}_retry{retry_num}",
+            input_text=(
+                f"=== SYSTEM PROMPT ===\n{system_prompt}\n\n"
+                f"=== USER PROMPT ===\n{user_prompt}\n\n"
+                f"=== PI COMMAND ===\n{' '.join(pi_cmd)}"
+            ),
+            output_text=proc.stdout if proc.stdout else "(empty stdout)",
+        )
 
         output = "\n".join(output_parts).strip()
         if not output:
