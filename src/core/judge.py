@@ -78,6 +78,68 @@ class Judge:
     def prompt_template(self, value: str) -> None:
         """Set a custom prompt template."""
         self._prompt_template = value
+
+    def _parse_json_response(
+        self, raw_response: str, task: str, output: str
+    ) -> dict | None:
+        """Extract and parse JSON from a judge LLM response. (M4)
+
+        Tries two strategies in order:
+          1. Direct JSON parse with fence stripping
+          2. Reparative parse (fix literal newlines, Python single-quote dicts)
+
+        Returns parsed dict or None if all strategies fail (raw text fallback).
+        """
+        import json as _json
+
+        if not raw_response or not isinstance(raw_response, str):
+            return None
+
+        json_str = raw_response.strip()
+
+        # Strip markdown code fences if present
+        fence_re = re.compile(r'```(?:json)?\s*\n(.*?)\n```', re.DOTALL)
+        fence_match = fence_re.search(json_str)
+        if fence_match:
+            json_str = fence_match.group(1).strip()
+
+        # Extract the JSON object
+        obj_re = re.compile(r'\{.*\}', re.DOTALL)
+        obj_match = obj_re.search(json_str)
+        if not obj_match:
+            return None  # No JSON-like content at all
+
+        json_str = obj_match.group(0)
+
+        # Remove any remaining fence markers
+        json_str = re.sub(r'^```(?:json)?\s*\n?', '', json_str)
+        json_str = re.sub(r'\n?```\s*$', '', json_str)
+
+        # --- Strategy 1: Direct parse ---
+        try:
+            return _json.loads(json_str)
+        except (_json.JSONDecodeError, ValueError):
+            pass
+
+        # --- Strategy 2: Reparative parse ---
+        # Fix literal newlines/tabs in JSON strings
+        string_re = re.compile(r'"([^"\\]*(?:\\.[^"\\]*)*)"', re.DOTALL)
+        repaired = string_re.sub(
+            lambda m: '"' + m.group(1)
+                .replace('\n', '\\n')
+                .replace('\t', '\\t')
+                .replace('\r', '\\r') + '"',
+            json_str,
+        )
+        # Also fix Python single-quoted dicts (LLMs sometimes output {'key': 'val'})
+        if repaired.startswith('{') and "'" in repaired[:50]:
+            repaired = re.sub(r"'([^']*)'", r'"\1"', repaired)
+
+        try:
+            return _json.loads(repaired)
+        except (_json.JSONDecodeError, ValueError):
+            return None  # All strategies exhausted
+
     
     def evaluate(self, task: str, output: str, model_profile_key: Optional[str] = None) -> Verdict:
         """Evaluate code/text output against the specified task.
@@ -279,83 +341,15 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
             )
         
         try:
-            # Try to parse JSON response
-            # Guard against None or non-string responses from LLM
-            if not raw_response or not isinstance(raw_response, str):
-                return Verdict(
-                    accepted=False,
-                    provisional=False,
-                    score=0.0,
-                    critique=f"Judge returned empty or non-string response: {type(raw_response).__name__}",
-                    checks_passed=[],
-                    checks_failed=["judge_unavailable"]
-                )
-            # First, try to extract JSON from the response if it's not directly valid JSON
-            # Strip markdown code fences first
-            json_str = raw_response.strip()
-            fence_match = re.search(r'```(?:json)?\s*\n(.*?)\n```', json_str, re.DOTALL)
-            if fence_match:
-                json_str = fence_match.group(1).strip()
-            
-            json_match = re.search(r'\{.*\}', json_str, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(0)
-                try:
-                    data = json.loads(json_str)
-                except (json.JSONDecodeError, ValueError):
-                    # Retry: strip code fences and try again
-                    stripped = json_str.strip()
-                    if stripped.startswith('```'):
-                        stripped = re.sub(r'^```(?:json)?\s*\n', '', stripped)
-                        stripped = re.sub(r'\n```\s*$', '', stripped)
-                        try:
-                            data = json.loads(stripped)
-                        except (json.JSONDecodeError, ValueError):
-                            # Final attempt: try reparative parsing
-                            # Common failure: literal newlines in JSON string values,
-                            # or LLM outputs Python dict syntax instead of JSON
-                            repaired = re.sub(
-                                r'"([^"\\]*(?:\\.[^"\\]*)*)"',
-                                lambda m: '"' + m.group(1).replace('\n', '\\n').replace('\t', '\\t') + '"',
-                                stripped
-                            )
-                            # Also fix single-quoted Python dicts (replace ' with ")
-                            if repaired.startswith('{') and "'" in repaired[:50]:
-                                repaired = re.sub(r"'([^']*)'", r'"\1"', repaired)
-                            try:
-                                data = json.loads(repaired)
-                            except (json.JSONDecodeError, ValueError):
-                                return Verdict(
-                                    accepted=False, provisional=False, score=0.0,
-                                    critique=f"Malformed JSON from judge: {stripped[:300]}",
-                                    checks_passed=[], checks_failed=["json_parse_error"]
-                                )
-                    else:
-                        # Try reparative parsing on the original
-                        repaired = re.sub(
-                            r'"([^"\\]*(?:\\.[^"\\]*)*)"',
-                            lambda m: '"' + m.group(1).replace('\n', '\\n').replace('\t', '\\t') + '"',
-                            json_str
-                        )
-                        if repaired.startswith('{') and "'" in repaired[:50]:
-                            repaired = re.sub(r"'([^']*)'", r'"\1"', repaired)
-                        try:
-                            data = json.loads(repaired)
-                        except (json.JSONDecodeError, ValueError):
-                            return Verdict(
-                                accepted=False, provisional=False, score=0.0,
-                                critique=f"Malformed JSON from judge: {json_str[:300]}",
-                                checks_passed=[], checks_failed=["json_parse_error"]
-                            )
-            else:
-                # If no JSON found, treat the whole response as critique
+            data = self._parse_json_response(raw_response, task, output)
+            if data is None:
+                # Non-JSON response — treat raw text as critique
                 data = {
                     "score": 0.0,
                     "critique": raw_response[:500],
                     "checks_passed": [],
                     "checks_failed": ["json_parse_error"]
                 }
-            
         except (json.JSONDecodeError, TypeError, ValueError):
             # If JSON parsing fails, return default verdict with raw response as critique
             return Verdict(

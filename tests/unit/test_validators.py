@@ -64,8 +64,8 @@ class TestTemplateValidator:
     
     def test_validate_existing_template(self):
         PROJECT_ROOT = Path(__file__).parent.parent.parent
-        v = TemplateValidator(PROJECT_ROOT / "templates")
-        ok, msg = v.validate_template("01-planner.md")
+        v = TemplateValidator(PROJECT_ROOT / "docs" / "workflow" / "templates")
+        ok, msg = v.validate_template("code-system-prompt.md")
         assert ok is True
     
     def test_validate_missing_template(self):
@@ -230,11 +230,11 @@ class TestValidatorIntegration:
         PROJECT_ROOT = Path(__file__).parent.parent.parent
         
         key_validator = APIKeyValidator()
-        template_validator = TemplateValidator(PROJECT_ROOT / "templates")
+        template_validator = TemplateValidator(PROJECT_ROOT / "docs" / "workflow" / "templates")
         
         # Validate both
         key_ok, key_msg = key_validator.validate_key("openrouter")
-        template_ok, template_msg = template_validator.validate_template("01-planner.md")
+        template_ok, template_msg = template_validator.validate_template("code-system-prompt.md")
         
         # Both should pass
         assert key_ok is True

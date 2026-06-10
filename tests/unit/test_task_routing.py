@@ -116,13 +116,14 @@ class TestOrchestratorPromptRouting(unittest.TestCase):
         prompt = self.orchestrator._get_agent_system_prompt("plan")
         self.assertIn("ROLE", prompt)
         self.assertIn("Architecture", prompt)
-        self.assertIn("Implementation Phases", prompt)
-        self.assertIn("do not write", prompt.lower())
+        self.assertIn("## Tasks", prompt)
+        self.assertIn("Brevity", prompt)
 
     def test_unknown_type_falls_back_to_inline(self):
         """Unknown task_type loads fallback."""
         prompt = self.orchestrator._get_agent_system_prompt("bogus_type")
-        self.assertIn("file_read", prompt)
+        self.assertIn("open()", prompt)
+        self.assertIn("stdlib", prompt)
 
     def test_execute_with_judge_accepts_task_type(self):
         """execute_with_judge accepts and routes task_type."""

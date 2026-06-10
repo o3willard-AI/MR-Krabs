@@ -64,4 +64,19 @@ class ProviderRouter:
             self._adapters[tier] = adapter
             return adapter
 
+        # M11: Custom-provider adapters (non-OpenAI-compatible APIs)
+        if provider == "anthropic":
+            from .providers.anthropic import AnthropicAdapter
+            adapter = AnthropicAdapter(config={"api_key_env": env_var}, name=f"{provider}-{model}")
+            adapter.default_model = model
+            self._adapters[tier] = adapter
+            return adapter
+
+        if provider == "vertex":
+            from .providers.vertex import VertexAdapter
+            adapter = VertexAdapter(config={"api_key_env": env_var}, name=f"{provider}-{model}")
+            adapter.default_model = model
+            self._adapters[tier] = adapter
+            return adapter
+
         return None  # Unknown provider — caller handles

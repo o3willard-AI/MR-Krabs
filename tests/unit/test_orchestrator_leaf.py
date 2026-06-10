@@ -144,8 +144,8 @@ class TestOrchestratorLeafMethods(unittest.TestCase):
     def test_get_agent_system_prompt_fallback(self):
         # No template file exists in temp dir
         result = self.orchestrator._get_agent_system_prompt("code")
-        self.assertIn("file_read", result)
-        self.assertIn("file_write", result)
+        self.assertIn("open()", result)
+        self.assertIn("stdlib", result)
 
     # ── _build_user_prompt ────────────────────────────────────────
 
@@ -180,17 +180,18 @@ class TestOrchestratorLeafMethods(unittest.TestCase):
 
     # ── _build_system_prompt ──────────────────────────────────────
 
-    def test_build_system_prompt_extracts_role(self):
+    def test_build_system_prompt_passes_template_through(self):
         template = (
             "# ROLE: Expert Coder\n\n"
             "You write code.\n\n"
             "## Tools\n\n"
-            "file_read, file_write\n"
+            "Use open(), pathlib, and stdlib.\n"
         )
         result = self.orchestrator._build_system_prompt("L0-Coder", template)
+        # _build_system_prompt now returns template as-is (no stripping)
         self.assertIn("# ROLE: Expert Coder", result)
-        self.assertNotIn("## Tools", result)
-        self.assertNotIn("file_read", result)
+        self.assertIn("open()", result)
+        self.assertIn("stdlib", result)
 
 
 if __name__ == "__main__":

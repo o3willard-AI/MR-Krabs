@@ -307,10 +307,17 @@ class LLMOrchestrator:
             self.pi_timeouts = {k.lower(): v for k, v in raw_pt.items()}
             raw_wf = getattr(cfg, "workflows", None) or {}
             self.workflows = {k.lower(): v for k, v in raw_wf.items()}
+            # R2: Protected file patterns — PI must never write to these.
+            raw_prot = getattr(cfg, "protected_files", None)
+            self.protected_file_patterns = list(raw_prot) if raw_prot else [
+                ".env", ".env.*", "*.kdbx", "*.key", "secrets/*",
+                ".mrkrabs/config.yaml", "pyproject.toml", ".git/*",
+            ]
         except Exception:
             self.pi_models = {}
             self.pi_timeouts = {}
             self.workflows = {}
+            self.protected_file_patterns = []
 
         # Prompt flow debug logger (no-op when disabled)
         debug_enabled = os.environ.get("MRKRABS_PROMPT_FLOW_DEBUG", "") == "1"
@@ -578,6 +585,45 @@ class LLMOrchestrator:
         """Extract system prompt from template."""
         return template  # template already contains the full prompt
 
+    def _is_protected_file(self, path: str) -> tuple[bool, str | None]:
+        """Check whether a file path matches protected patterns. (R2)
+
+        Returns (is_protected, matched_pattern).
+        """
+        import fnmatch
+        from pathlib import Path
+        clean = str(Path(path))
+        for pattern in self.protected_file_patterns:
+            if fnmatch.fnmatch(clean, pattern) or fnmatch.fnmatch(
+                Path(clean).name, pattern
+            ):
+                return True, pattern
+        return False, None
+
+    def _resolve_sandboxed_path(
+        self, path: str, project_root: str | None
+    ) -> tuple[str | None, str | None]:
+        """Resolve a file write path within the sandbox. (R3)
+
+        If project_root is set, resolves the path relative to it and
+        verifies it doesn't escape via '..' or symlinks.
+
+        Returns (resolved_absolute_path, rejection_reason).
+        rejection_reason is None if the path passes sandbox checks.
+        """
+        from pathlib import Path
+        if not project_root:
+            # No sandbox — passthrough
+            return str(Path(path)), None
+
+        root = Path(project_root).resolve()
+        try:
+            candidate = (root / path).resolve()
+            candidate.relative_to(root)  # raises ValueError if escapes
+            return str(candidate), None
+        except ValueError:
+            return None, f"path escapes sandbox: {path}"
+
     def _execute_pi_tier(
         self,
         tier: str,
@@ -702,8 +748,31 @@ class LLMOrchestrator:
                         content_val = args.get("content", "")
                         if path and content_val:
                             try:
-                                self.file_tools.file_write(path, content_val)
-                                written_paths.append(path)
+                                # R2: Block writes to protected files (configs, secrets, .git)
+                                is_protected, matched = self._is_protected_file(path)
+                                if is_protected:
+                                    print(f"  ⛔ PROTECTED FILE blocked: {path} "
+                                          f"(matches '{matched}')")
+                                    tool_results.append({
+                                        "tool": name, "args": args,
+                                        "protected_block": True, "pattern": matched,
+                                    })
+                                else:
+                                    # R3: Sandbox check — confine writes to project_root
+                                    safe_path, sandbox_err = (
+                                        self._resolve_sandboxed_path(path, project_root)
+                                    )
+                                    if sandbox_err:
+                                        print(f"  ⛔ SANDBOX blocked: {sandbox_err}")
+                                        tool_results.append({
+                                            "tool": name, "args": args,
+                                            "sandbox_block": True,
+                                        })
+                                    else:
+                                        self.file_tools.file_write(
+                                            safe_path or path, content_val
+                                        )
+                                        written_paths.append(path)
                             except Exception:
                                 pass
                     tool_results.append({"tool": name, "args": args})
@@ -727,8 +796,31 @@ class LLMOrchestrator:
                     content_val = args.get("content", "")
                     if path and content_val:
                         try:
-                            self.file_tools.file_write(path, content_val)
-                            written_paths.append(path)
+                            # R2: Block writes to protected files
+                            is_protected, matched = self._is_protected_file(path)
+                            if is_protected:
+                                print(f"  ⛔ PROTECTED FILE blocked: {path} "
+                                      f"(matches '{matched}')")
+                                tool_results.append({
+                                    "tool": name, "args": args,
+                                    "protected_block": True, "pattern": matched,
+                                })
+                            else:
+                                # R3: Sandbox check
+                                safe_path, sandbox_err = (
+                                    self._resolve_sandboxed_path(path, project_root)
+                                )
+                                if sandbox_err:
+                                    print(f"  ⛔ SANDBOX blocked: {sandbox_err}")
+                                    tool_results.append({
+                                        "tool": name, "args": args,
+                                        "sandbox_block": True,
+                                    })
+                                else:
+                                    self.file_tools.file_write(
+                                        safe_path or path, content_val
+                                    )
+                                    written_paths.append(path)
                         except Exception:
                             pass
                 tool_results.append({"tool": name, "args": args})
@@ -1008,6 +1100,10 @@ class LLMOrchestrator:
         # Load the agent system prompt once (used across all tiers and fail-now)
         agent_system_prompt = self._get_agent_system_prompt(task_type)
         pi_system_prompt = self._get_pi_system_prompt(task_type)
+
+        # R4: Keep prompt flow logger pointed at this task so if
+        # auto-enabled on failure it writes to the right directory.
+        self._prompt_flow_logger.task_id = task_id
 
         # ── Pre-flight planning (plan_first) ───────────────────────────
         # B2/R5: Auto-trigger planner for oversized tasks.
@@ -1411,6 +1507,14 @@ class LLMOrchestrator:
                 feedback = verdict.critique
                 print(f"Tier {tier} retry {retry_num} rejected: {verdict.critique[:200]}")
 
+                # R4: Auto-enable prompt flow debug on first rejection
+                # so the user gets diagnostic dumps without manual env-var setup.
+                if not self._prompt_flow_logger.enabled:
+                    self._prompt_flow_logger.enabled = True
+                    self._prompt_flow_logger.task_id = task_id
+                    print(f"Prompt flow debug auto-enabled → "
+                          f"~/.mrkrabs/debug/{task_id}/")
+
             # All retries exhausted for this tier (or fail_up aborted)
             if fail_up_aborted:
                 # FailUp aborted intentionally — skip failure actions
@@ -1424,6 +1528,7 @@ class LLMOrchestrator:
             if failure_action == FailureAction.LOG_ONLY:
                 # Just log and continue to next tier
                 print(f"Tier {tier} failed (log_only).")
+                continue
 
             elif failure_action == FailureAction.NOTIFY_AND_ESCALATE:
                 # Log spend, log failure, send notification, then continue to next tier
