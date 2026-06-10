@@ -772,7 +772,7 @@ class LLMOrchestrator:
                                         self.file_tools.file_write(
                                             safe_path or path, content_val
                                         )
-                                        written_paths.append(path)
+                                        written_paths.append(safe_path or path)
                             except Exception:
                                 pass
                     tool_results.append({"tool": name, "args": args})
@@ -820,7 +820,7 @@ class LLMOrchestrator:
                                     self.file_tools.file_write(
                                         safe_path or path, content_val
                                     )
-                                    written_paths.append(path)
+                                    written_paths.append(safe_path or path)
                         except Exception:
                             pass
                 tool_results.append({"tool": name, "args": args})
