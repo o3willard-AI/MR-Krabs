@@ -21,11 +21,14 @@ Tier Loop: L0 → L1 → L2 → Principal
 
 ## Tier Hierarchy
 
-| Tier | Model | Runtime | Cost | Role |
-|------|-------|---------|------|------|
-| L0-Coder | qwen3-coder-30b | PI on .23 | Free | ~75% success |
-| L1-Coder | deepseek-v4-flash | PI via OpenRouter | Cloud | First escalation |
-| L2-Coder | mimo-v2.5 | PI via OpenRouter | Cloud | Second escalation |
+**Example deployment.** Configure your own in `~/.mrkrabs/config.yaml`.
+See [MODEL_CONFIG.md](MODEL_CONFIG.md).
+
+| Tier | Example | Runtime | Cost | Role |
+|------|---------|---------|------|------|
+| L0-Coder | 30B MoE (local) | PI on local GPU | Free | ~75% success |
+| L1-Coder | Fast cloud model | PI via OpenRouter | Cloud | First escalation |
+| L2-Coder | Premium cloud model | PI via OpenRouter | Cloud | Second escalation |
 | Principal | — | Calling agent | Your sub | Final fallback |
 
 ## PI Coder Backend
@@ -52,9 +55,9 @@ When PI is absent, falls back to raw LLM via ProviderRouter.
 
 | Property | Value |
 |----------|-------|
-| Model | claude-distilled-35b (.21) |
+| Class | Reasoning model recommended |
 | Temperature | 0.1 |
-| Threshold | 0.7 |
+| Threshold | 0.7 (configurable) |
 | Rubric | Anchored 0.0–1.0 |
 
 Coaching reply structure (on rejection): what was done well → what's wrong → why → how to fix → verify.

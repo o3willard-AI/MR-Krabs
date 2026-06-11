@@ -58,3 +58,33 @@ os.environ["MRKRABS_FAIL_UP"] = "1"
 python -m src.validators.templates
 python -m src.validators.startup
 ```
+
+## 7. Environment Variables
+
+All MR-Krabs behavior can be controlled via environment variables.
+These override config.yaml settings at runtime.
+
+| Variable | Purpose | Values |
+|----------|---------|--------|
+| `MRKRABS_CONFIG` | Override config file path | Path to config.yaml |
+| `MRKRABS_PROMPT_FLOW_DEBUG` | Dump every agent's full prompt/response to disk | `1` or unset |
+| `MRKRABS_FAIL_NOW` | Force a specific tier to fail (simulate escalation) | Tier name, e.g. `l0-coder` |
+| `MRKRABS_FAIL_UP` | Immediately abort current tier and escalate | `1` |
+| `MRKRABS_ENABLE_HEURISTIC_CLASSIFIER` | Enable regex-based task classification | `true` or unset |
+
+### Debugging with prompt flow dumps
+
+```bash
+MRKRABS_PROMPT_FLOW_DEBUG=1 python -m src.core.orchestrator --task "Write a bloom filter"
+# Dumps appear in ~/.mrkrabs/debug/<task_id>/
+```
+
+### Simulating escalation
+
+```bash
+# Force L0 to fail — tests that L1 picks up the work
+MRKRABS_FAIL_NOW=l0-coder python -m src.core.orchestrator --task "Write a bloom filter"
+
+# Kill current tier immediately
+MRKRABS_FAIL_UP=1 python -m src.core.orchestrator --task "Write a bloom filter"
+```

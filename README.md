@@ -29,13 +29,16 @@ L0 (local, free) → L1 (cloud) → L2 (cloud) → Principal (your agent)
       ↑ escalated only if judge rejects quality
 ```
 
-| Tier | Model | Cost |
-|------|-------|------|
-| L0-Coder | qwen3-coder-30b (local .23) | Free |
-| L1-Coder | deepseek-v4-flash (OpenRouter) | Cloud |
-| L2-Coder | mimo-v2.5 (OpenRouter) | Cloud |
-| Judge | claude-distilled-35b (local .21) | Free |
-| Principal | — | Your agent's sub |
+**All tiers are configurable.** The table below shows one example deployment.
+See [docs/MODEL_CONFIG.md](docs/MODEL_CONFIG.md) for more.
+
+| Tier | Example | Cost |
+|------|---------|------|
+| L0-Coder | Local 30B MoE via LiteLLM | Free |
+| L1-Coder | Fast cloud model (OpenRouter) | Cloud |
+| L2-Coder | Premium cloud model (OpenRouter) | Cloud |
+| Judge | Reasoning model (local or cloud) | Varies |
+| Principal | — | Your agent |
 
 ## How It Works
 
@@ -68,9 +71,10 @@ Full reference: [docs/MODEL_CONFIG.md](docs/MODEL_CONFIG.md).
 ## Docs
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — pipeline design, judge system, PI flow
-- [docs/COOKBOOK.md](docs/COOKBOOK.md) — integration recipes
+- [docs/COOKBOOK.md](docs/COOKBOOK.md) — integration recipes + environment variables
 - [docs/MODEL_CONFIG.md](docs/MODEL_CONFIG.md) — config reference + examples
 - [docs/JUDGE.md](docs/JUDGE.md) — judge prompt design + research
+- [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — common failure modes and fixes
 
 ## License
 
