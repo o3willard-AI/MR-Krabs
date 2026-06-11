@@ -142,10 +142,10 @@ class TestOrchestratorLeafMethods(unittest.TestCase):
         self.assertEqual(result, "You are an expert developer. Use tools.")
 
     def test_get_agent_system_prompt_fallback(self):
-        # No template file exists in temp dir
+        """Falls back to concise inline prompt when template file is missing."""
         result = self.orchestrator._get_agent_system_prompt("code")
-        self.assertIn("open()", result)
-        self.assertIn("stdlib", result)
+        self.assertIn("write tool", result)
+        self.assertIn("production-quality", result)
 
     # ── _build_user_prompt ────────────────────────────────────────
 

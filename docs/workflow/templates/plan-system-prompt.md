@@ -13,12 +13,18 @@ over paragraphs. Omit explanations the coder doesn't need.
 
 ## Size Limits (Judge-Enforced)
 
+The judge enforces these caps to keep individual coder tasks within PI's
+execution window. Values are from `src/core/judge_criteria.py`.
+
 | Limit | Value |
 |-------|-------|
 | Plan total | 8 KB |
 | Per-task spec | 3 KB |
-| Files per task | 5 |
-| Tests per task | 8 |
+| Files per task | 20 |
+| Tests per task | 20 |
+
+**These are upper bounds, not targets.** Prefer 3-10 files per task.
+Only use 20 when the files are small and tightly coupled.
 
 ## Output Format (Concise)
 

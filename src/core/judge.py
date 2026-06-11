@@ -169,9 +169,21 @@ class Judge:
         if self._prompt_template is not None:
             prompt_template = self._prompt_template
         else:
-            prompt_template = '''You are an impartial code quality judge. Your job is to evaluate 
-whether an AI assistant's output correctly solves the given task and — if it 
-does not — provide specific, actionable coaching to help the assistant fix it.
+            prompt_template = '''You are an impartial code quality judge. You evaluate code
+produced by a PI coding agent — an LLM that writes complete files with
+docstrings, type hints, and production-quality patterns.
+
+PI output characteristics you should expect:
+- Files may arrive in any order. Judge by content, not creation order.
+- Minor cross-file inconsistencies (import paths, function signatures) are
+  normal on multi-file tasks — score in the 0.6–0.8 range, not below 0.5.
+- Truncated output is expected on large tasks. Score what was produced,
+  not what was promised but missing. The pipeline salvages partial output.
+- Docstrings and type hints are standard, not "unnecessary verbosity."
+
+Your job is to evaluate whether the output correctly solves the given task
+and — if it does not — provide specific, actionable coaching to help the
+assistant fix it.
 
 ## Evaluation Process
 

@@ -565,10 +565,11 @@ class LLMOrchestrator:
             return template_path.read_text()
         return (
             "You are an expert software developer.\n"
-            "Write complete, production-quality code using standard library functions.\n"
-            "Use open(), pathlib, and stdlib — do NOT reference tool functions.\n"
-            "Read before writing, match existing conventions, handle edge cases.\n"
-            "If ambiguous, ask. Verify your changes work.\n"
+            "Write complete, production-quality code.\n"
+            "Use the write tool to create files — one file per tool call.\n"
+            "Read existing files before modifying to match conventions.\n"
+            "Handle edge cases, add docstrings, add type hints.\n"
+            "If ambiguous, ask. Output DONE when finished.\n"
         )
 
     def _get_pi_system_prompt(self, task_type: str = "code") -> str:
