@@ -1455,7 +1455,7 @@ class LLMOrchestrator:
                     ]
                     all_remaining = unwritten_this_pass + future_refs
                     if all_remaining:
-                        new_limit = max(3, len(subtask.files) // 2)  # floor at 3
+                        new_limit = max(2, len(subtask.files) // 2)  # floor at 2
                         if new_limit >= len(subtask.files):
                             # Re-split wouldn't help — already at floor
                             print(f"  Truncated at floor ({len(subtask.files)}/pass) "
