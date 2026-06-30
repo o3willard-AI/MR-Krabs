@@ -1121,7 +1121,6 @@ class LLMOrchestrator:
 
         output = (proc.stderr or proc.stdout or "").strip()
         # OpenCode writes TUI/text to stderr by default; stdout may be empty.
-        print(f"  OC output: {len(output)} chars, {len(written_paths)} files on disk")
 
         # R4: Dump OpenCode input/output to debug dir
         self._prompt_flow_logger.log(
@@ -1456,7 +1455,19 @@ class LLMOrchestrator:
                     ]
                     all_remaining = unwritten_this_pass + future_refs
                     if all_remaining:
-                        new_limit = max(1, len(subtask.files) // 2)
+                        new_limit = max(3, len(subtask.files) // 2)  # floor at 3
+                        if new_limit >= len(subtask.files):
+                            # Re-split wouldn't help — already at floor
+                            print(f"  Truncated at floor ({len(subtask.files)}/pass) "
+                                  f"— escalating, cannot split further")
+                            return {
+                                "task_id": task_id, "success": False,
+                                "output": f"Pass {subtask.pass_num} truncated at floor",
+                                "error": "Context window too small for pass size",
+                                "attempts_total": total_attempts,
+                                "duration_seconds": total_duration,
+                                "pass_results": results,
+                            }
                         new_passes = split_into_passes(all_remaining, max_files=new_limit)
                         if new_passes:
                             print(f"  Truncated — re-splitting {len(all_remaining)} "

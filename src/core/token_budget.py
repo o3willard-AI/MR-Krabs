@@ -48,7 +48,7 @@ AGENT_OVERHEAD_TOKENS = 10_000  # conservative middle ground
 # Minimum floor as absolute file count — never go below this
 # regardless of budget. With 32K context even 3-5 files is viable
 # for large files like app.py.
-FLOOR_FILES = 5
+FLOOR_FILES = 3
 
 # Known context windows for cloud providers (tokens)
 KNOWN_PROVIDER_WINDOWS: dict[str, int] = {

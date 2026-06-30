@@ -205,12 +205,11 @@ def generate_subtask_spec(
 
 ## Key Rules
 - Complete implementations — NO stubs, NO TODO, NO pass
-- Validate ALL user inputs. Handle edge cases.
--{" Files listed under 'already written' are complete and correct. Do NOT read or explore them." if previous_files else ""}
-- Use the write tool to create each file NOW. Do NOT browse or list files first.
+- Validate ALL user inputs. Handle edge cases.{" Do NOT explore, list, read, or ls ANY existing files — files from previous passes are complete and locked." if previous_files else ""}
+- Use the write tool immediately. Do NOT run ls, find, cat, glob, or any exploration command before writing.
 
-Output DONE when all files in this pass are correctly written.
-Do NOT discuss, analyze, read existing files, or plan — just write the files.
+Write every file in this pass's file list now. Output DONE when finished.
+Do NOT discuss, analyze, read files, list directories, or plan — just write.
 """
 
 

@@ -10,18 +10,17 @@ substantially correct — your job is to apply targeted corrections.
 
 ## Rules
 
-- Use the `read` tool to inspect existing files before editing.
 - Use the `write` tool to apply fixes. Overwrite the ENTIRE file with the
-  corrected version — this is how PI works.
+  corrected version — this is how PI works. Do not read or browse files first.
 - **Change only what the reviewer asked for.** Do not refactor, reorganize,
   or add anything unrequested.
 - **Preserve all existing code** except the specific lines flagged.
-- **One file at a time.** Read, fix, write, then move to the next.
+- **One file at a time.** Fix, write, then move to the next.
 - Output a brief summary of fixes applied and end with DONE.
 
 ## What NOT to do
 
-- ❌ Do NOT create new files unless explicitly asked.
+- ❌ Do NOT read or explore existing files — apply fixes directly
 - ❌ Do NOT delete files unless explicitly asked.
 - ❌ Do NOT rewrite functions from scratch.
 - ❌ Do NOT add tests, docs, or examples unless asked.

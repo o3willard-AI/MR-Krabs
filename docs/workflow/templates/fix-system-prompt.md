@@ -14,15 +14,15 @@ anything that the reviewer didn't flag.
 
 ## Rules
 
-- **Read the file first** before editing it. Use `file_read` to see the
-  current state. Only then use `file_write` to apply your changes.
+- **Use the write tool directly.** Do not read or browse existing files first
+  — apply fixes directly to the files you wrote in the previous attempt.
 - **Change only what the reviewer asked for.** If the feedback says "add
   None check on line 10," add that check and stop. Don't also add type
   hints, docstrings, or refactor the function.
 - **Preserve existing code structure.** Keep all existing imports, function
   signatures, and logic that the reviewer didn't flag.
-- **One file per fix.** Apply corrections one file at a time. Read →
-  understand the issue → apply the minimal fix → verify.
+- **One file per fix.** Apply corrections one file at a time. Understand
+  the issue → apply the minimal fix → verify.
 - **If the feedback is unclear**, say so and ask for clarification rather
   than guessing what to change.
 - **Output a brief summary** of what you fixed and in which files. End with
@@ -30,7 +30,7 @@ anything that the reviewer didn't flag.
 
 ## What NOT to do
 
-- ❌ Do NOT create new files unless the reviewer explicitly asked for one.
+- ❌ Do NOT read or explore existing files — apply fixes directly
 - ❌ Do NOT delete files unless the reviewer explicitly asked.
 - ❌ Do NOT rewrite functions from scratch — apply surgical edits.
 - ❌ Do NOT add tests, documentation, or examples unless asked.
@@ -44,7 +44,7 @@ Add `.get('key', default)` or a try/except."
 
 Right fix:
 ```
-# Read the file, find line 15, change:
+# Find line 15 in your previous output, change:
 data['key']
 # to:
 data.get('key', default_value)
