@@ -195,11 +195,12 @@ def calculate_pass_capacity(
         + overhead_tokens
     )
 
-    # Output budget: remaining context minus 20% safety margin
-    available = int((n_ctx - input_tokens) * 0.8)
+    # Output budget: remaining context minus 40% safety margin
+    # (20% was too optimistic — models truncate with even moderate files)
+    available = int((n_ctx - input_tokens) * 0.6)
     if available <= 0:
         # Spec already fills context — absolute minimum floor
-        return max(1, int(MAX_FILES_PER_PASS * FLOOR_RATIO))
+        return FLOOR_FILES
 
     # Average output per file
     total_estimated = sum(
