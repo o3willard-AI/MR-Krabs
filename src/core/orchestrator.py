@@ -1386,6 +1386,27 @@ class LLMOrchestrator:
             "pass_results": results,
         }
 
+    def _run_self_improve_if_enabled(self, task_id: str) -> None:
+        """Run self-improvement cycle if MRKRABS_SELF_IMPROVE=1.
+
+        Reads pipeline data, discovers failure patterns, and updates
+        model_profiles.py. Never blocks execution — errors are printed
+        but not raised.
+        """
+        if os.environ.get("MRKRABS_SELF_IMPROVE", "") != "1":
+            return
+        try:
+            from src.core.self_improver import SelfImprover
+            improver = SelfImprover()
+            imp_result = improver.run()
+            print(f"[SELF-IMPROVE] Discovered {imp_result.patterns_discovered} "
+                  f"patterns across {len(imp_result.models_updated)} models")
+            if imp_result.errors:
+                for err in imp_result.errors:
+                    print(f"[SELF-IMPROVE] Error: {err}")
+        except Exception as e:
+            print(f"[SELF-IMPROVE] Failed: {e}")
+
     def execute_with_judge(
         self,
         task_id: str,
@@ -1538,6 +1559,7 @@ class LLMOrchestrator:
                 }
                 print(f"[PRINCIPAL] Escalating to Principal Agent — "
                       f"MR-Krabs tiers exhausted: {escalation_path}")
+                self._run_self_improve_if_enabled(task_id)
                 return {
                     "task_id": task_id,
                     "success": False,
@@ -1794,8 +1816,9 @@ class LLMOrchestrator:
                         "tier": tier, "score": verdict.score,
                         "output": result["output"], "files": files,
                     }
-                    
+
                     duration_seconds = time.monotonic() - start_time
+                    self._run_self_improve_if_enabled(task_id)
                     return {
                         "task_id": task_id,
                         "success": True,
@@ -1918,6 +1941,7 @@ class LLMOrchestrator:
                 # Confirmed — continue to next tier
 
         # All tiers exhausted — total failure
+        self._run_self_improve_if_enabled(task_id)
         return {
             "task_id": task_id,
             "success": False,
