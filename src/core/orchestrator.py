@@ -1118,7 +1118,8 @@ class LLMOrchestrator:
                         except OSError:
                             pass
 
-        output = proc.stdout.strip() if proc.stdout else ""
+        output = (proc.stderr or proc.stdout or "").strip()
+        # OpenCode writes TUI/text to stderr by default; stdout may be empty.
 
         # R4: Dump OpenCode input/output to debug dir
         self._prompt_flow_logger.log(
@@ -1127,7 +1128,7 @@ class LLMOrchestrator:
                 f"=== SYSTEM + USER PROMPT ===\n{full_prompt}\n\n"
                 f"=== OPENCODE COMMAND ===\n{' '.join(oc_cmd[:4])}..."
             ),
-            output_text=proc.stdout if proc.stdout else "(empty stdout)",
+            output_text=proc.stderr or proc.stdout or "(empty)",
         )
 
         if proc.returncode != 0:
