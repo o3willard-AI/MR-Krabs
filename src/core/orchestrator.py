@@ -1868,6 +1868,7 @@ class LLMOrchestrator:
                     "escalation_path": escalation_path + ["Principal"],
                     "duration_seconds": time.monotonic() - start_mono,
                     "tool_results": None,
+                    "truncated": any_truncation,
                     "message": (
                         "Task escalated to Principal Agent. MR-Krabs attempted "
                         f"{len(escalation_path)} tier(s) with {attempts_total} total "
