@@ -1407,6 +1407,64 @@ class LLMOrchestrator:
         except Exception as e:
             print(f"[SELF-IMPROVE] Failed: {e}")
 
+    # ── Checkpoint methods (Gap 3: Crash Recovery) ────────────────────
+
+    def _checkpoint_path(self, task_id: str) -> Path:
+        """Path to the checkpoint file for a given task."""
+        safe_id = task_id.replace("/", "_").replace(".", "_")
+        return self.escalations_dir / f"{safe_id}_checkpoint.json"
+
+    def _write_checkpoint(
+        self,
+        task_id: str,
+        escalation_path: list[str],
+        accumulated_files: dict[str, int],
+        retries_per_tier: dict[str, int],
+        best_output: dict,
+        cost_summary: dict,
+        attempts_total: int,
+        start_time: float,
+    ) -> None:
+        """Write a checkpoint after a tier completes (accept or reject)."""
+        checkpoint = {
+            "task_id": task_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "escalation_path": escalation_path,
+            "accumulated_files": accumulated_files,
+            "retries_per_tier": retries_per_tier,
+            "best_output": {
+                k: v for k, v in best_output.items()
+                if k != "files"  # files are on disk, don't serialize
+            },
+            "cost_summary": {
+                k: str(v) if hasattr(v, '__float__') else v
+                for k, v in cost_summary.items()
+            },
+            "attempts_total": attempts_total,
+            "elapsed_seconds": time.monotonic() - start_time,
+        }
+        self._checkpoint_path(task_id).write_text(
+            json.dumps(checkpoint, indent=2, default=str)
+        )
+
+    def _load_checkpoint(self, task_id: str) -> dict | None:
+        """Load a checkpoint if it exists. Returns None if no checkpoint."""
+        path = self._checkpoint_path(task_id)
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def _clear_checkpoint(self, task_id: str) -> None:
+        """Delete the checkpoint file after successful completion."""
+        path = self._checkpoint_path(task_id)
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def execute_with_judge(
         self,
         task_id: str,
@@ -1804,6 +1862,18 @@ class LLMOrchestrator:
                 except Exception:
                     pass  # cost tracking failure should never block execution
 
+                # ── Checkpoint after every tier verdict ──────────────────────────
+                self._write_checkpoint(
+                    task_id=task_id,
+                    escalation_path=escalation_path + [tier],
+                    accumulated_files=accumulated_files,
+                    retries_per_tier=retries_per_tier,
+                    best_output=best_output,
+                    cost_summary=self.cost_tracker.get_summary(),
+                    attempts_total=attempts_total,
+                    start_time=start_time,
+                )
+
                 # --- Verdict ---
                 if verdict.accepted:
                     # Collect file contents for result
@@ -1818,6 +1888,7 @@ class LLMOrchestrator:
                     }
 
                     duration_seconds = time.monotonic() - start_time
+                    self._clear_checkpoint(task_id)
                     self._run_self_improve_if_enabled(task_id)
                     return {
                         "task_id": task_id,
