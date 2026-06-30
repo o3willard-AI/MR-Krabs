@@ -42,8 +42,9 @@ CHARS_PER_TOKEN = 3.5
 
 # Estimated token overhead for agent conversation format
 # (system prompt framing, tool definitions, conversation history scaffolding).
-# PI's overhead is ~15K tokens at 32K context; OpenCode is lower (~8K).
-AGENT_OVERHEAD_TOKENS = 10_000  # conservative middle ground
+# OpenCode adds ~3K tokens per file (tool call + response + compaction scaffolding).
+# At 32K ctx, 15K overhead is realistic.
+AGENT_OVERHEAD_TOKENS = 15_000  # matches observed throughput at 32K
 
 # Minimum floor as absolute file count — never go below this
 # regardless of budget. With 32K context even 3-5 files is viable
