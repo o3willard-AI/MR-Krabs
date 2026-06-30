@@ -175,34 +175,91 @@ def generate_subtask_spec(
     total_passes: int,
     previous_files: list[str],
 ) -> str:
-    """Generate a self-contained sub-task spec for one PI pass.
+    """Generate a self-contained sub-task spec for one pass.
 
-    Includes:
-    - Pass number and total
-    - Files to modify in this pass
-    - Files already written (do NOT modify)
-    - Original task context
-    - Clear instruction to only touch the listed files
+    Extracts only the relevant sections from the original spec for
+    the files in this pass. Does NOT include the full original spec
+    text — that overwhelms the model and triggers analysis mode.
     """
-    file_list = '\n'.join(f'- {f.path}' for f in subtask.files) if subtask.files else '(none)'
+    file_list = '\n'.join(
+        f'- {f.path}' for f in subtask.files
+    ) if subtask.files else '(none)'
     previous = '\n'.join(
         f'- {f} (already written in previous passes)'
         for f in previous_files
     ) if previous_files else '(none)'
 
+    # Extract relevant spec sections for each file in this pass
+    file_sections = _extract_file_sections(original_spec, subtask.files)
+
     return f"""# Pass {pass_num}/{total_passes}
 
-## Files to modify in this pass:
+## Files to create in this pass:
 {file_list}
 
 ## Files already written (do NOT modify):
 {previous}
 
-## Original Task Context:
-{original_spec}
+## File Specifications
+{file_sections}
 
-## Instructions:
-Only modify the files listed under "Files to modify in this pass."
-Do NOT touch files in "Files already written."
+## Key Rules
+- Complete implementations — NO stubs, NO TODO, NO pass
+- Validate ALL user inputs. Handle edge cases.
+- Match conventions — read existing files before writing
+- Use the write tool to create each file
+
 Output DONE when all files in this pass are correctly written.
+Do NOT discuss, analyze, or plan — just write the files.
 """
+
+
+def _extract_file_sections(
+    spec: str, files: list
+) -> str:
+    """Extract only the sections from the spec that describe the given files.
+
+    Matches numbered sections like '## N. path/to/file.py' or bare file
+    references followed by description text. Returns the relevant sections
+    concatenated, or a fallback message if no sections found.
+    """
+    file_paths = {f.path for f in files}
+    sections: list[str] = []
+    current_section: list[str] | None = None
+    current_file: str | None = None
+
+    for line in spec.split('\n'):
+        # Detect section headers like "## 5. templates/base.html"
+        match = re.match(
+            r'^##\s+\d+\.\s+([a-zA-Z0-9_/.~@-]+\.\w+)', line
+        )
+        if match:
+            found_path = match.group(1)
+            # Flush previous section if it matched a target file
+            if current_section and current_file in file_paths:
+                sections.append('\n'.join(current_section))
+            # Start new section
+            if found_path in file_paths or any(
+                fp.endswith(found_path) for fp in file_paths
+            ):
+                current_section = [line]
+                current_file = found_path
+            else:
+                current_section = None
+                current_file = None
+        elif current_section is not None:
+            # Continue collecting section content
+            current_section.append(line)
+
+    # Flush last section
+    if current_section and current_file in file_paths:
+        sections.append('\n'.join(current_section))
+
+    if sections:
+        return '\n\n'.join(sections)
+
+    # Fallback: include the files list with any context we can find
+    fallback = []
+    for fp in sorted(file_paths):
+        fallback.append(f"### {fp}\n(No specification found — create based on the file name and context.)")
+    return '\n\n'.join(fallback)

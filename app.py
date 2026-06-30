@@ -1,4 +1,16 @@
-import ipaddress
+"""
+MR-Krabs Kiosk Admin Panel
+Flask web app for Ubuntu touchscreen system administration.
+
+Run: pip install flask && python app.py
+Access: http://<ip>:5000
+
+Service:
+    sudo cp kiosk-admin.service /etc/systemd/system/
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now kiosk-admin.service
+"""
+
 import json
 import os
 import pwd
@@ -7,67 +19,209 @@ import shlex
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
+from ipaddress import ip_address, ip_network
 from pathlib import Path
-
-from flask import Flask, jsonify, render_template, request
+from flask import (
+    Flask,
+    flash,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    url_for,
+)
 
 app = Flask(__name__)
+app.secret_key = os.urandom(32)
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# ─── helpers ────────────────────────────────────────────────────────────────
+
+def run(cmd, timeout=30):
+    """Run a subprocess command (list form, no shell=True)."""
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout
+    )
+    return result
 
 
-def _run(cmd, timeout=15):
-    """Run a shell command using list-form and shlex.quote. Returns stdout."""
-    quoted = []
-    for part in cmd:
-        quoted.append(shlex.quote(str(part)))
-    cmd_str = " ".join(quoted)
+def validate_ip(ip_str):
+    """Return True if valid IPv4 address."""
     try:
-        result = subprocess.run(
-            cmd_str,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return result.stdout.strip(), result.stderr.strip(), result.returncode
-    except subprocess.TimeoutExpired:
-        return "", "Command timed out", 1
-    except Exception as e:
-        return "", str(e), 1
+        ip_address(ip_str)
+        return True
+    except (ValueError, TypeError):
+        return False
 
 
-def _check_root():
-    """Ensure the caller is root; return error dict if not."""
-    if os.geteuid() != 0:
-        return {"error": "This operation requires root privileges"}, 403
-    return None
+def validate_netmask(mask_str):
+    """Return True if valid netmask like /24."""
+    if not re.match(r"^/\d{1,2}$", mask_str):
+        return False
+    prefix = int(mask_str[1:])
+    if prefix < 0 or prefix > 32:
+        return False
+    return True
 
 
-def _get_os_name():
-    """Return a human-readable OS name."""
-    if os.path.exists("/etc/os-release"):
-        with open("/etc/os-release") as f:
+def get_interfaces():
+    """Get network interfaces using nmcli."""
+    r = run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])
+    interfaces = []
+    for line in r.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split(":")
+        if len(parts) >= 3:
+            interfaces.append({
+                "name": parts[0],
+                "type": parts[1],
+                "state": parts[2],
+            })
+    return interfaces
+
+
+def get_connection_info(device_name):
+    """Get connection details for a device."""
+    r = run(["nmcli", "-t", "-f", "GENERAL.STATE,IP4.GATEWAY,IP4.DNS,IP4.ADDRESS",
+             "connection", "show", device_name])
+    info = {"state": "", "gateway": "", "dns": "", "address": ""}
+    if r.returncode == 0 and r.stdout.strip():
+        for line in r.stdout.strip().split("\n"):
+            parts = line.split(":")
+            if len(parts) >= 2:
+                field, value = parts[0], parts[1]
+                if field == "GENERAL.STATE":
+                    info["state"] = value
+                elif field == "IP4.GATEWAY":
+                    info["gateway"] = value
+                elif field == "IP4.DNS":
+                    info["dns"] = value
+                elif field == "IP4.ADDRESS":
+                    info["address"] = value
+    return info
+
+
+def get_groups():
+    """Get all system groups."""
+    r = run(["getent", "group"])
+    groups = []
+    for line in r.stdout.strip().split("\n"):
+        if line.strip():
+            groups.append(line.strip().split(":")[0])
+    return sorted(groups)
+
+
+def get_user_groups(username):
+    """Get groups a user belongs to."""
+    r = run(["groups", username])
+    if r.returncode != 0:
+        return []
+    # Output: "username : group1 group2 ..."
+    parts = r.stdout.strip().split(":", 1)
+    if len(parts) >= 2:
+        return parts[1].strip().split()
+    return []
+
+
+def get_system_info():
+    """Get CPU, memory, disk usage, uptime, load average."""
+    info = {"cpu": "N/A", "memory": "N/A", "disk": "N/A",
+            "uptime": "N/A", "load": "N/A",
+            "cpu_percent": 0, "mem_percent": 0, "disk_percent": 0}
+
+    # CPU usage via top
+    r = run(["top", "-bn1"], timeout=5)
+    if r.returncode == 0:
+        for line in r.stdout.split("\n"):
+            if "Cpu(s)" in line or "CPU" in line.upper():
+                match = re.search(r"(\d+\.?\d*)\s*id", line)
+                if match:
+                    idle = float(match.group(1))
+                    info["cpu_percent"] = round(100 - idle, 1)
+                    info["cpu"] = f"{info['cpu_percent']}%"
+                break
+
+    # Memory from /proc/meminfo
+    try:
+        mem = {}
+        with open("/proc/meminfo", "r") as f:
             for line in f:
-                if line.startswith("PRETTY_NAME="):
-                    return line.split("=", 1)[1].strip().strip('"')
-    return "Ubuntu"
+                parts = line.split(":")
+                if len(parts) >= 2:
+                    key = parts[0].strip()
+                    val = parts[1].strip().split()[0]
+                    mem[key] = int(val)
+        total = mem.get("MemTotal", 0)
+        available = mem.get("MemAvailable", 0)
+        used = total - available
+        if total > 0:
+            info["mem_percent"] = round((used / total) * 100, 1)
+            info["memory"] = f"{info['mem_percent']}% ({used // 1024}MB / {total // 1024}MB)"
+    except (IOError, OSError, KeyError):
+        pass
 
+    # Disk usage for /
+    r = run(["df", "-B1", "/"])
+    if r.returncode == 0:
+        lines = r.stdout.strip().split("\n")
+        if len(lines) >= 2:
+            parts = lines[1].split()
+            if len(parts) >= 5:
+                total_disk = int(parts[1])
+                used_disk = int(parts[2])
+                if total_disk > 0:
+                    info["disk_percent"] = round((used_disk / total_disk) * 100, 1)
+                    info["disk"] = f"{info['disk_percent']}% ({used_disk // (1024**3)}GB / {total_disk // (1024**3)}GB)"
 
-def _get_hostname():
+    # Uptime
+    r = run(["uptime", "-p"])
+    if r.returncode == 0:
+        info["uptime"] = r.stdout.strip()
+
+    # Load average
     try:
-        out, _, _ = _run(["hostname"])
-        return out
-    except Exception:
-        return "kiosk"
+        with open("/proc/loadavg", "r") as f:
+            load_parts = f.read().split()
+            info["load"] = f"{load_parts[0]} / {load_parts[1]} / {load_parts[2]}"
+    except (IOError, OSError, IndexError):
+        pass
+
+    return info
 
 
-# ---------------------------------------------------------------------------
-# HTML pages
-# ---------------------------------------------------------------------------
+def get_user_info(username):
+    """Get user details from /etc/passwd."""
+    try:
+        pw = pwd.getpwnam(username)
+        return {
+            "username": pw.pw_name,
+            "uid": pw.pw_uid,
+            "home": pw.pw_dir,
+            "shell": pw.pw_shell,
+            "gid": pw.pw_gid,
+        }
+    except KeyError:
+        return None
 
+
+def get_all_users():
+    """Get all non-system users (uid >= 1000)."""
+    users = []
+    r = run(["getent", "passwd"])
+    if r.returncode == 0:
+        for line in r.stdout.strip().split("\n"):
+            parts = line.split(":")
+            if len(parts) >= 7:
+                username = parts[0]
+                uid = int(parts[2])
+                home = parts[5]
+                if uid >= 1000 and username not in ("nobody", "sync", "shutdown", "halt"):
+                    users.append({"username": username, "home": home})
+    return sorted(users, key=lambda u: u["username"])
+
+
+# ─── page routes ────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
@@ -75,499 +229,332 @@ def index():
 
 
 @app.route("/network")
-def network_page():
+def network():
     return render_template("network.html")
 
 
 @app.route("/wifi")
-def wifi_page():
+def wifi():
     return render_template("wifi.html")
 
 
 @app.route("/wired")
-def wired_page():
+def wired():
     return render_template("wired.html")
 
 
 @app.route("/users")
-def users_page():
+def users():
     return render_template("users.html")
 
 
-@app.route("/users/add")
-def users_add_page():
+@app.route("/users/add", methods=["GET", "POST"])
+def users_add():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        fullname = request.form.get("fullname", "").strip()
+        password = request.form.get("password", "")
+        confirm = request.form.get("confirm", "")
+
+        # Validation
+        if not username:
+            flash("Username is required.", "error")
+        elif not re.match(r"^[a-z_][a-z0-9_-]*$", username):
+            flash("Username must start with a lowercase letter or underscore, "
+                  "and contain only lowercase letters, numbers, hyphens, underscores.",
+                  "error")
+        elif len(username) < 3 or len(username) > 32:
+            flash("Username must be between 3 and 32 characters.", "error")
+        elif not fullname:
+            flash("Full name is required.", "error")
+        elif len(password) < 6:
+            flash("Password must be at least 6 characters.", "error")
+        elif password != confirm:
+            flash("Passwords do not match.", "error")
+        else:
+            # Create user
+            r = run(["useradd", "-m", "-s", "/bin/bash",
+                     "-c", shlex.quote(fullname), shlex.quote(username)])
+            if r.returncode != 0:
+                flash(f"Failed to create user: {r.stderr.strip()}", "error")
+            else:
+                # Set password via chpasswd
+                pw_data = f"{username}:{password}".encode()
+                r = run(["chpasswd"])
+                if r.returncode != 0:
+                    flash(f"Failed to set password: {r.stderr.strip()}", "error")
+                else:
+                    flash(f"User '{username}' created successfully.", "success")
+                    return redirect(url_for("users"))
     return render_template("users_add.html")
 
 
-@app.route("/user/<username>/permissions")
-def user_permissions_page(username):
-    return render_template("user_permissions.html", username=username)
+@app.route("/users/<username>/permissions", methods=["GET", "POST"])
+def user_permissions(username):
+    if request.method == "POST":
+        groups = request.form.getlist("groups")
+        # Get current groups
+        current = get_user_groups(username)
+        all_groups = get_groups()
 
+        # Remove from groups not selected
+        for g in current:
+            if g not in groups:
+                run(["usermod", "-aG", f"!{g}", username])
 
-@app.route("/kiosk")
-def kiosk_page():
-    service_name = "kiosk-mode.service"
-    service_path = Path("/etc/systemd/system") / service_name
-    try:
-        _, _, rc = _run(["systemctl", "is-active", service_name])
-        status = "enabled" if rc == 0 else "disabled"
-    except Exception:
-        status = "disabled"
-    return render_template("kiosk.html", status=status)
+        # Add to new groups
+        for g in groups:
+            if g not in current:
+                run(["usermod", "-aG", shlex.quote(g), username])
 
+        flash(f"Permissions updated for {username}.", "success")
+        return redirect(url_for("users"))
 
-@app.route("/system")
-def system_page():
-    """System information page"""
-    cpu_info = _get_cpu_info()
-    memory_info = _get_memory_info()
-    disk_info = _get_disk_info()
-    system_info = {
-        "uptime": _get_system_info().get("uptime", "Unknown"),
-        "load": _get_system_info().get("load", "N/A"),
-        "python": sys.version.split()[0],
-    }
+    user_info = get_user_info(username)
+    if not user_info:
+        flash(f"User '{username}' not found.", "error")
+        return redirect(url_for("users"))
+
+    all_groups = get_groups()
+    user_groups = get_user_groups(username)
     return render_template(
-        "system_info.html",
-        cpu_info=cpu_info,
-        memory_info=memory_info,
-        disk_info=disk_info,
-        system_info=system_info,
+        "user_permissions.html",
+        user_info=user_info,
+        all_groups=all_groups,
+        user_groups=user_groups,
     )
 
 
+@app.route("/kiosk")
+def kiosk():
+    return render_template("kiosk.html")
+
+
+@app.route("/system_info")
+def system_info():
+    return render_template("system_info.html")
+
+
 @app.route("/logs")
-def logs_page():
+def logs():
     return render_template("logs.html")
 
 
-# ---------------------------------------------------------------------------
-# API: Dashboard
-# ---------------------------------------------------------------------------
-
-
-@app.route("/api/dashboard")
-def api_dashboard():
-    return jsonify({
-        "os": _get_os_name(),
-        "hostname": _get_hostname(),
-        "kiosk": "enabled" if Path("/etc/systemd/system/kiosk-mode.service").exists() else "disabled",
-    })
-
-
-# ---------------------------------------------------------------------------
-# API: Network
-# ---------------------------------------------------------------------------
-
+# ─── API routes ─────────────────────────────────────────────────────────────
 
 @app.route("/api/network/status")
 def api_network_status():
-    interfaces = []
-    out, _, rc = _run(["nmcli", "-t", "-f", "GENERAL.STATE,GENERAL.DEVICE,GENERAL.CONNECTION", "device", "status"])
-    if rc == 0 and out:
-        for line in out.split("\n"):
-            if not line.strip():
-                continue
-            parts = line.split(":")
-            if len(parts) >= 3:
-                state = parts[0]
-                dev = parts[1]
-                conn = parts[2] if parts[2] else "auto-" + dev
-                interfaces.append({
-                    "name": dev,
-                    "state": state,
-                    "connection": conn,
-                })
+    interfaces = get_interfaces()
+    for iface in interfaces:
+        if iface["type"] == "ethernet" and iface["state"] == "connected":
+            info = get_connection_info(iface["name"])
+            iface.update(info)
+            break
     return jsonify({"interfaces": interfaces})
-
-
-# ---------------------------------------------------------------------------
-# API: WiFi
-# ---------------------------------------------------------------------------
-
-
-@app.route("/api/wifi/status")
-def api_wifi_status():
-    connected_ssid = ""
-    out, _, rc = _run(["nmcli", "-t", "-f", "ACTIVE,SSID", "dev", "wifi"])
-    if rc == 0:
-        for line in out.split("\n"):
-            if not line.strip():
-                continue
-            parts = line.split(":")
-            if len(parts) >= 2 and parts[0] == "yes":
-                connected_ssid = parts[1]
-                break
-
-    networks = []
-    out, _, rc = _run(["nmcli", "-t", "-f", "SSID,SIGNAL,BARS,SECURITY", "dev", "wifi", "list"])
-    if rc == 0 and out:
-        for line in out.split("\n"):
-            if not line.strip():
-                continue
-            parts = line.split(":")
-            if len(parts) >= 3:
-                ssid = parts[0]
-                signal = parts[1]
-                bars = parts[2]
-                security = parts[3] if len(parts) > 3 else ""
-                if ssid:
-                    networks.append({
-                        "ssid": ssid,
-                        "signal": signal,
-                        "bars": bars,
-                        "security": security,
-                    })
-    return jsonify({"connected": connected_ssid, "networks": networks})
 
 
 @app.route("/api/wifi/scan", methods=["POST"])
 def api_wifi_scan():
-    err = _check_root()
-    if err:
-        return jsonify(err)
-    out, _, rc = _run(["nmcli", "dev", "wifi", "rescan"])
-    return jsonify({"success": rc == 0, "error": out if rc != 0 else None})
+    run(["nmcli", "device", "wifi", "rescan"])
+    time.sleep(2)
+    r = run(["nmcli", "-t", "-f",
+             "SSID,SECURITY,ACTIVE,SIGNAL,DEVICE",
+             "wifi", "list"])
+    networks = []
+    for line in r.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split(":")
+        if len(parts) >= 5:
+            networks.append({
+                "ssid": parts[0],
+                "security": parts[1],
+                "active": parts[2] == "yes",
+                "signal": int(parts[3]) if parts[3].isdigit() else 0,
+                "device": parts[4],
+            })
+    return jsonify({"networks": networks})
 
 
 @app.route("/api/wifi/connect", methods=["POST"])
 def api_wifi_connect():
-    err = _check_root()
-    if err:
-        return jsonify(err)
-    ssid = request.form.get("ssid", "")
-    password = request.form.get("password", "")
+    ssid = request.form.get("ssid", "").strip()
+    password = request.form.get("password", "").strip()
     if not ssid:
-        return jsonify({"success": False, "error": "SSID required"}), 400
-    cmd = ["nmcli", "dev", "wifi", "connect", ssid]
+        flash("SSID is required.", "error")
+        return redirect(url_for("wifi"))
+
+    # Check if already connected
+    r = run(["nmcli", "-t", "-f", "SSID,STATE", "wifi", "status"])
+    for line in r.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split(":")
+        if len(parts) >= 2 and parts[0] == ssid and parts[1] == "connected":
+            flash(f"Already connected to '{ssid}'.", "success")
+            return redirect(url_for("wifi"))
+
+    # Connect
     if password:
-        cmd.append("password")
-        cmd.append(password)
-    out, _, rc = _run(cmd)
-    return jsonify({"success": rc == 0, "error": out if rc != 0 else None})
+        r = run(["nmcli", "device", "wifi", "connect",
+                 shlex.quote(ssid), "password", password])
+    else:
+        r = run(["nmcli", "device", "wifi", "connect",
+                 shlex.quote(ssid)])
+
+    if r.returncode == 0:
+        flash(f"Connected to '{ssid}'.", "success")
+    else:
+        flash(f"Connection failed: {r.stderr.strip()}", "error")
+    return redirect(url_for("wifi"))
 
 
-# ---------------------------------------------------------------------------
-# API: Wired
-# ---------------------------------------------------------------------------
+@app.route("/api/wired/configure", methods=["POST"])
+def api_wired_configure():
+    interface = request.form.get("interface", "").strip()
+    mode = request.form.get("mode", "dhcp")
+    if not interface:
+        flash("No interface selected.", "error")
+        return redirect(url_for("wired"))
 
+    if mode == "dhcp":
+        r = run(["nmcli", "connection", "delete", shlex.quote(interface)])
+        r = run(["nmcli", "connection", "add",
+                 "type", "ethernet",
+                 "con-name", shlex.quote(interface),
+                 "ifname", shlex.quote(interface),
+                 "autoconnect", "yes",
+                 "ipv4.method", "auto"])
+    else:
+        ip_addr = request.form.get("ip", "").strip()
+        netmask = request.form.get("netmask", "").strip()
+        gateway = request.form.get("gateway", "").strip()
 
-@app.route("/api/wired/status")
-def api_wired_status():
-    interfaces = []
-    out, _, rc = _run(["nmcli", "-t", "-f", "GENERAL.DEVICE,GENERAL.STATE,IP4.ADDRESS,IP4.GATEWAY", "device", "show"])
-    if rc == 0 and out:
-        for line in out.split("\n"):
-            if not line.strip():
-                continue
-            parts = line.split(":")
-            if len(parts) >= 2 and parts[1] == "connected":
-                dev = parts[0]
-                addr = ""
-                gw = ""
-                for line2 in out.split("\n"):
-                    if line2.startswith(dev + ":"):
-                        sub_parts = line2.split(":")
-                        if len(sub_parts) >= 4:
-                            addr = sub_parts[2]
-                            gw = sub_parts[3] if len(sub_parts) > 3 else ""
-                interfaces.append({
-                    "name": dev,
-                    "state": "connected",
-                    "address": addr,
-                    "gateway": gw,
-                })
-    return jsonify({"interfaces": interfaces})
+        if not validate_ip(ip_addr):
+            flash("Invalid IP address.", "error")
+            return redirect(url_for("wired"))
+        if not validate_netmask(netmask):
+            flash("Invalid netmask. Use /24, /16, or /8.", "error")
+            return redirect(url_for("wired"))
 
+        # Convert netmask prefix to dotted notation
+        prefix = int(netmask[1:])
+        mask_int = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+        dotted_mask = ".".join(str((mask_int >> i) & 0xFF) for i in (24, 16, 8, 0))
 
-# ---------------------------------------------------------------------------
-# API: Users
-# ---------------------------------------------------------------------------
+        r = run(["nmcli", "connection", "delete", shlex.quote(interface)])
+        r = run(["nmcli", "connection", "add",
+                 "type", "ethernet",
+                 "con-name", shlex.quote(interface),
+                 "ifname", shlex.quote(interface),
+                 "autoconnect", "yes",
+                 "ipv4.method", "manual",
+                 "ipv4.address", f"{ip_addr}{netmask}",
+                 "ipv4.gateway", gateway if gateway else "",
+                 "ipv4.dns", "8.8.8.8,8.8.4.4"])
 
-
-@app.route("/api/users")
-def api_users_list():
-    users = []
-    try:
-        out, _, _ = _run(["getent", "passwd"])
-        if out:
-            for line in out.split("\n"):
-                if not line.strip():
-                    continue
-                parts = line.split(":")
-                if len(parts) >= 3:
-                    username = parts[0]
-                    uid = int(parts[2])
-                    if uid >= 1000 and username != "nobody":
-                        groups_out, _, _ = _run(["id", "-Gn", username])
-                        groups = groups_out.split() if groups_out else []
-                        users.append({
-                            "username": username,
-                            "groups": groups,
-                        })
-    except Exception:
-        pass
-    return jsonify({"users": users})
-
-
-@app.route("/api/users", methods=["POST"])
-def api_users_add():
-    err = _check_root()
-    if err:
-        return jsonify(err)
-
-    username = request.form.get("username", "").strip()
-    fullname = request.form.get("fullname", "").strip()
-    password = request.form.get("password", "")
-    confirm = request.form.get("confirm", "")
-
-    if not username or not password:
-        return jsonify({"success": False, "error": "Username and password are required"}), 400
-
-    if password != confirm:
-        return jsonify({"success": False, "error": "Passwords do not match"}), 400
-
-    username_regex = r"^[a-z_][a-z0-9_-]*$"
-    if not re.match(username_regex, username):
-        return jsonify({"success": False, "error": "Invalid username format"}), 400
-
-    # Check if user already exists
-    out, _, rc = _run(["id", username])
-    if rc == 0:
-        return jsonify({"success": False, "error": "User already exists"}), 409
-
-    # Create user with home directory
-    cmd = ["useradd", "-m", "-s", "/bin/bash"]
-    if fullname:
-        cmd.extend(["-c", fullname])
-    cmd.append(username)
-    out, err_out, rc = _run(cmd)
-    if rc != 0:
-        return jsonify({"success": False, "error": f"Failed to create user: {err_out}"}), 500
-
-    # Set password via chpasswd
-    import io
-    try:
-        process = subprocess.Popen(
-            ["chpasswd"],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        stdin_data = f"{username}:{password}\n".encode()
-        stdout, stderr = process.communicate(input=stdin_data, timeout=10)
-        if process.returncode != 0:
-            return jsonify({"success": False, "error": f"Failed to set password: {stderr.decode()}"}), 500
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 500
-
-    return jsonify({"success": True}), 201
-
-
-@app.route("/api/users/<username>/permissions")
-def api_users_permissions(username):
-    groups = []
-    out, _, rc = _run(["id", "-Gn", username])
-    if rc == 0 and out:
-        groups = out.split()
-    return jsonify({"username": username, "groups": groups})
-
-
-@app.route("/api/users/<username>/permissions", methods=["POST"])
-def api_users_permissions_update(username):
-    err = _check_root()
-    if err:
-        return jsonify(err)
-
-    groups = request.form.getlist("groups")
-    if not groups:
-        return jsonify({"success": False, "error": "No groups selected"}), 400
-
-    # Check user exists
-    out, _, rc = _run(["id", username])
-    if rc != 0:
-        return jsonify({"success": False, "error": "User does not exist"}), 404
-
-    # Add user to all selected groups using -aG (append)
-    for group in groups:
-        cmd = ["usermod", "-aG", group, username]
-        _, err_out, rc = _run(cmd)
-        if rc != 0:
-            return jsonify({"success": False, "error": f"Failed to add {username} to {group}: {err_out}"}), 500
-
-    return jsonify({"success": True})
-
-
-# ---------------------------------------------------------------------------
-# API: Kiosk
-# ---------------------------------------------------------------------------
+    if r.returncode == 0:
+        flash(f"Wired connection configured on {interface}.", "success")
+    else:
+        flash(f"Configuration failed: {r.stderr.strip()}", "error")
+    return redirect(url_for("wired"))
 
 
 @app.route("/api/kiosk/toggle", methods=["POST"])
 def api_kiosk_toggle():
-    err = _check_root()
-    if err:
-        return jsonify(err)
+    action = request.form.get("action", "")
+    if action not in ("enable", "disable"):
+        flash("Invalid action.", "error")
+        return redirect(url_for("kiosk"))
 
-    service_name = "kiosk-mode.service"
-    service_path = Path("/etc/systemd/system") / service_name
-
-    if service_path.exists():
-        out, _, rc = _run(["systemctl", "disable", service_name])
-        if rc != 0:
-            return jsonify({"success": False, "error": f"Failed to disable: {out}"}), 500
-        return jsonify({"success": True, "status": "disabled"})
+    service_name = "kiosk-admin"
+    if action == "enable":
+        r = run(["systemctl", "enable", "--now", service_name])
+        if r.returncode == 0:
+            flash("Kiosk mode enabled.", "success")
+        else:
+            flash(f"Failed to enable kiosk mode: {r.stderr.strip()}", "error")
     else:
-        service_content = "[Unit]\nDescription=Kiosk Mode\nAfter=graphical.target\n\n[Service]\nExecStart=/usr/bin/Xorg :0 -share-vts\n\n[Install]\nWantedBy=graphical.target\n"
-        service_path.write_text(service_content)
-        out, _, rc = _run(["systemctl", "enable", service_name])
-        if rc != 0:
-            return jsonify({"success": False, "error": f"Failed to enable: {out}"}), 500
-        return jsonify({"success": True, "status": "enabled"})
+        r = run(["systemctl", "disable", "--now", service_name])
+        if r.returncode == 0:
+            flash("Kiosk mode disabled.", "success")
+        else:
+            flash(f"Failed to disable kiosk mode: {r.stderr.strip()}", "error")
+    return redirect(url_for("kiosk"))
 
 
-# ---------------------------------------------------------------------------
-# API: System Info
-# ---------------------------------------------------------------------------
+@app.route("/api/dashboard")
+def api_dashboard():
+    """Aggregated dashboard status."""
+    data = {
+        "network": {"status": "unknown"},
+        "wifi": {"status": "unknown"},
+        "users_count": 0,
+        "kiosk_enabled": False,
+        "system": get_system_info(),
+    }
+
+    # Network status
+    r = run(["nmcli", "-t", "-f", "DEVICE,TYPE,STATE", "device", "status"])
+    for line in r.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        parts = line.split(":")
+        if len(parts) >= 3:
+            if parts[1] == "ethernet" and parts[2] == "connected":
+                data["network"]["status"] = "connected"
+            elif parts[1] == "wifi" and parts[2] == "connected":
+                data["network"]["status"] = "connected"
+                data["wifi"]["status"] = "connected"
+
+    # User count
+    users = get_all_users()
+    data["users_count"] = len(users)
+
+    # Kiosk status
+    r = run(["systemctl", "is-active", "kiosk-admin"])
+    if r.returncode == 0:
+        data["kiosk_enabled"] = True
+
+    return jsonify(data)
 
 
-@app.route("/api/system/info")
-def api_system_info():
-    cpu_info = _get_cpu_info()
-    mem_info = _get_memory_info()
-    disk_info = _get_disk_info()
-    system_info = _get_system_info()
-    return jsonify({
-        "cpu": cpu_info,
-        "memory": mem_info,
-        "disk": disk_info,
-        "system": system_info,
-    })
-
-
-def _get_cpu_info():
-    usage = 0
-    model = "Unknown"
-    out, _, rc = _run(["cat", "/proc/cpuinfo"])
-    if rc == 0 and out:
-        for line in out.split("\n"):
-            if line.startswith("model name"):
-                model = line.split(":", 1)[1].strip()
-                break
-
-    # Try to read CPU usage from /proc/stat
+@app.route("/api/logs/fetch", methods=["POST"])
+def api_logs_fetch():
+    log_file = request.form.get("log_file", "syslog")
+    lines_count = request.form.get("lines", "100")
     try:
-        with open("/proc/stat") as f:
-            for line in f:
-                if line.startswith("cpu "):
-                    parts = line.split()[1:]
-                    total = sum(int(x) for x in parts)
-                    idle = int(parts[3]) if len(parts) > 3 else 0
-                    if total > 0:
-                        usage = round((1 - idle / total) * 100, 1)
-                    break
-    except Exception:
-        pass
+        lines_count = int(lines_count)
+    except (ValueError, TypeError):
+        lines_count = 100
 
-    return {
-        "model": model,
-        "usage": usage,
-    }
+    log_path = f"/var/log/{log_file}"
+    if not log_file.replace(".", "").replace("_", "").isalnum():
+        flash("Invalid log file name.", "error")
+        return jsonify({"error": "Invalid log file name"}), 400
 
+    r = run(["tail", "-n", str(lines_count), log_path])
+    if r.returncode != 0:
+        return jsonify({"error": r.stderr.strip()}), 403
 
-def _get_memory_info():
-    total = 0
-    used = 0
-    out, _, rc = _run(["free", "-b"])
-    if rc == 0 and out:
-        lines = out.split("\n")
-        if len(lines) >= 2:
-            parts = lines[1].split()
-            if len(parts) >= 3:
-                total = int(parts[1])
-                used = int(parts[2])
-    usage = (used / total * 100) if total > 0 else 0
-    return {
-        "total": round(total / (1024**3), 2),
-        "used": round(used / (1024**3), 2),
-        "usage": round(usage, 1),
-    }
+    entries = []
+    for line in r.stdout.strip().split("\n"):
+        if not line.strip():
+            continue
+        entry = {"line": line, "severity": "info"}
+        upper = line.upper()
+        if "ERROR" in upper or "FAIL" in upper:
+            entry["severity"] = "error"
+        elif "WARN" in upper:
+            entry["severity"] = "warning"
+        elif "CRIT" in upper or "EMERG" in upper:
+            entry["severity"] = "critical"
+        entries.append(entry)
+
+    return jsonify({"entries": entries})
 
 
-def _get_disk_info():
-    total = 0
-    used = 0
-    out, _, rc = _run(["df", "-B1", "/"])
-    if rc == 0 and out:
-        lines = out.split("\n")
-        if len(lines) >= 2:
-            parts = lines[1].split()
-            if len(parts) >= 3:
-                total = int(parts[1])
-                used = int(parts[2])
-    usage = (used / total * 100) if total > 0 else 0
-    return {
-        "total": round(total / (1024**3), 2),
-        "used": round(used / (1024**3), 2),
-        "usage": round(usage, 1),
-    }
-
-
-def _get_system_info():
-    uptime = "Unknown"
-    load = "0.00, 0.00, 0.00"
-    out, _, rc = _run(["uptime"])
-    if rc == 0 and out:
-        load = out.split("load average:")[1].strip()
-        # Parse uptime
-        if "day" in out or "day " in out:
-            parts = out.split(",")
-            for part in parts:
-                if "day" in part or "day " in part:
-                    uptime = part.strip()
-                    break
-        elif "hour" in out or "hour " in out:
-            parts = out.split(",")
-            for part in parts:
-                if "hour" in part or "hour " in part:
-                    uptime = part.strip()
-                    break
-    return {
-        "uptime": uptime,
-        "load": load,
-    }
-
-
-# ---------------------------------------------------------------------------
-# API: Logs
-# ---------------------------------------------------------------------------
-
-
-@app.route("/api/logs")
-def api_logs():
-    severity = request.args.get("severity", "all")
-    lines_count = request.args.get("lines", "100", type=int)
-
-    logs = []
-    out, _, rc = _run(["journalctl", "-n", str(lines_count), "--no-pager", "-q"])
-    if rc == 0 and out:
-        for line in out.split("\n"):
-            if not line.strip():
-                continue
-            log_entry = {
-                "message": line,
-                "severity": "info",
-            }
-            if "error" in line.lower():
-                log_entry["severity"] = "error"
-            elif "warning" in line.lower():
-                log_entry["severity"] = "warning"
-            elif "success" in line.lower() or "ok" in line.lower():
-                log_entry["severity"] = "success"
-            logs.append(log_entry)
-
-    return jsonify({"logs": logs})
-
+# ─── main ───────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

@@ -162,7 +162,8 @@ class TestGenerateSubtaskSpec:
             previous_files=["src/done.py"],
         )
         assert "Pass 2/3" in spec
-        assert "Original task context here" in spec
+        assert "pass_num=2" not in spec  # no raw original_spec dumping
+        assert "do NOT modify" in spec
 
     def test_lists_previous_files(self):
         """Already-written files are listed as 'do NOT modify'."""
