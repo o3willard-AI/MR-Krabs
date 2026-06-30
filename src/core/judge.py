@@ -328,10 +328,14 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
         ]
         
         try:
-            # Call the judge LLM using OpenRouter API
-            api_key = os.environ.get(self.model_config["env_var"])
+            # Call the judge LLM — supports both hardcoded api_key and env var
+            api_key = self.model_config.get("api_key") or os.environ.get(
+                self.model_config.get("env_var") or ""
+            )
             if not api_key:
-                raise ValueError(f"API key not found: {self.model_config['env_var']}")
+                raise ValueError(
+                    f"No API key configured for judge ({self.model_config.get('provider', '?')})"
+                )
             
             headers = {
                 "Authorization": f"Bearer {api_key}",

@@ -245,7 +245,7 @@ class TestJudge(unittest.TestCase):
         
         self.assertFalse(verdict.accepted)
         self.assertEqual(verdict.score, 0.0)
-        self.assertIn("API key not found", verdict.critique)
+        self.assertIn("No API key configured", verdict.critique)
         self.assertEqual(verdict.checks_failed, ["judge_unavailable"])
     
     @patch.dict('os.environ', {'OPENROUTER_API_KEY': 'test-api-key'})
