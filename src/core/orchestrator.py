@@ -21,6 +21,7 @@ from src.core.tier_config import get_tier_failure_action, get_tier_max_retries
 from src.core.fail_now import get_fail_now, clear_fail_now, is_fail_now_active, check_mesh_fail_now
 from src.core.fail_now import is_fail_up_active, clear_fail_up, check_mesh_fail_up
 from src.core.model_profiles import get_prepend, get_known_failures
+from src.core.context_compressor import compress_history, estimate_context_fill
 
 # Prompt flow debug logger (opt-in via MRKRABS_PROMPT_FLOW_DEBUG=1)
 from src.core.prompt_flow_logger import PromptFlowLogger
@@ -1587,39 +1588,41 @@ class LLMOrchestrator:
                     retries_per_tier[tier] = retry_num - 1
                     break  # exit retry loop, go to next tier
 
-                user_prompt = context.get("task_spec", task_id)
+                # ── Context compression (Article Pillar 2) ───────────────────────────
+                # Assemble the prompt with compression: keep task spec verbatim,
+                # summarize older judge feedback, compress accumulated files when >5.
+                task_spec = str(context.get("task_spec", task_id))
 
-                # ── R1: Incremental pass-through ──────────────────────
-                # On the first attempt of a new tier (not a retry within
-                # the same tier), inject the list of files already
-                # completed by previous tiers so the coder doesn't
-                # rewrite them.
-                if retry_num == 1 and accumulated_files:
-                    done_list = "\n".join(
-                        f"- {p} ({b} bytes) — COMPLETED, DO NOT REWRITE"
-                        for p, b in sorted(accumulated_files.items())
-                    )
-                    user_prompt = (
-                        f"## Files Already Completed by Previous Tiers\n\n"
-                        f"The following files have already been written correctly. "
-                        f"DO NOT modify or rewrite them. Focus ONLY on files "
-                        f"NOT listed here.\n\n{done_list}\n\n"
-                        f"## Task\n\n{user_prompt}"
-                    )
+                # Collect feedback history for this tier across retries
+                if not hasattr(self, '_feedback_history'):
+                    self._feedback_history: dict[str, list[str]] = {}
+                tier_fb_key = f"{task_id}:{tier}"
+                if tier_fb_key not in self._feedback_history:
+                    self._feedback_history[tier_fb_key] = []
+                if feedback and feedback not in self._feedback_history[tier_fb_key]:
+                    self._feedback_history[tier_fb_key].append(feedback)
 
-                # ── Model profile: inject prepend prompt ──────────────
+                feedback_history = self._feedback_history.get(tier_fb_key, [])
+
+                # Model profile prepend
                 model_key = tier_config.get("profile")
-                if model_key:
-                    prepend = get_prepend(model_key)
-                    if prepend:
-                        user_prompt = f"{prepend}\n\n{user_prompt}"
+                prepend = get_prepend(model_key) if model_key else ""
 
-                if feedback:
-                    user_prompt = (
-                        f"{user_prompt}\n\n## Previous Attempt Feedback\n\n"
-                        f"The prior output was rejected by the quality judge.\n"
-                        f"Critique: {feedback}\n\nPlease fix these issues and try again."
-                    )
+                # Pass-through: only inject accumulated files on first attempt of a new tier
+                acc_files = accumulated_files if retry_num == 1 and accumulated_files else None
+
+                user_prompt = compress_history(
+                    task_spec=task_spec,
+                    accumulated_files=acc_files,
+                    feedback_history=feedback_history,
+                    prepend=prepend,
+                )
+
+                # ── Context fill observability ─────────────────────────────────────
+                fill = estimate_context_fill(task_spec, acc_files, feedback_history)
+                self.monitor.record_context_fill(tier, fill)
+                if fill > 0.8:
+                    print(f"  ⚠️  Context fill: {fill:.0%} — compression active")
 
                 # Route through OpenCode (default), PI (fallback), or raw LLM
                 has_opencode = bool(self.opencode_models.get(tier.lower()))
@@ -1835,6 +1838,11 @@ class LLMOrchestrator:
                           f"~/.mrkrabs/debug/{task_id}/")
 
             # All retries exhausted for this tier (or fail_up aborted)
+            # ── Clean up per-tier feedback history ──────────────────────
+            tier_fb_key = f"{task_id}:{tier}"
+            if hasattr(self, '_feedback_history'):
+                self._feedback_history.pop(tier_fb_key, None)
+
             if fail_up_aborted:
                 # FailUp aborted intentionally — skip failure actions
                 escalation_path.append(tier)

@@ -319,6 +319,17 @@ class PipelineMonitor:
             anomaly_flags=flags,
         )
 
+    def record_context_fill(self, tier: str, fill_ratio: float) -> None:
+        """Record estimated context fill ratio for observability."""
+        self.record(
+            role="orchestrator",
+            tier=tier,
+            attempt=0,
+            action_type="context_fill",
+            summary={"fill_ratio": fill_ratio},
+            anomaly_flags=["context_pressure"] if fill_ratio > 0.8 else [],
+        )
+
     def record_escalation(
         self,
         from_tier: str,
