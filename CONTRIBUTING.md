@@ -72,4 +72,6 @@ When adding or changing features, update the relevant docs:
 - User-facing changes → [README.md](README.md) or [docs/](docs/)
 - New config options → [docs/MODEL_CONFIG.md](docs/MODEL_CONFIG.md)
 - New env vars → [docs/COOKBOOK.md](docs/COOKBOOK.md)
+- New modules or pipeline features → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+- New judge features → [docs/JUDGE.md](docs/JUDGE.md)
 - Common failure modes → [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)

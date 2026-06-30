@@ -141,6 +141,38 @@ judge = Judge(
 )
 ```
 
+### Structured Task Contracts (spec dict)
+
+The `evaluate()` method accepts an optional `spec` dict with structured
+acceptance criteria. These are injected into the judge prompt as a
+"## Acceptance Criteria" block, giving the judge an objective bar.
+
+```python
+verdict = judge.evaluate(
+    task="Write an authentication module",
+    output=coder_output,
+    spec={
+        "success_criteria": [
+            "Passwords are hashed with bcrypt",
+            "Login returns JWT token",
+            "All tests pass",
+        ],
+        "constraints": [
+            "Must use existing ORM — no raw SQL",
+            "No new dependencies",
+        ],
+        "anti_patterns": [
+            "eval()",
+            "shell=True",
+            "plaintext password storage",
+        ],
+    },
+)
+```
+
+The orchestrator passes `context['spec']` through to the judge automatically.
+Anti-pattern matches are scored below 0.5.
+
 ### Custom Prompt Template
 
 Override the entire judge prompt:

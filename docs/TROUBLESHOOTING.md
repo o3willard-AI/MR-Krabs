@@ -104,6 +104,64 @@ visible content.
 4. **Actual bug in output** — check `MRKRABS_PROMPT_FLOW_DEBUG=1` dumps and read
    the coaching reply for specific file/line issues.
 
+## Context overflow — compression active
+
+**Symptom:** The orchestrator prints `⚠️ Context fill: >80% — compression active`
+during retries. Older judge feedback is being summarized rather than passed
+verbatim.
+
+**This is expected behavior, not a failure.** When multiple retries accumulate
+feedback within a tier, the context compressor (Article Pillar 2) activates:
+
+- Older judge critiques are summarized into one-line entries
+- Accumulated file lists >5 files are compressed to a count + top-N
+- The most recent judge critique is always preserved verbatim
+- Task spec and system prompt are never compressed
+
+**To reduce compression:** Use smaller task specs (<3KB) or fewer files per pass.
+If you see the warning consistently, the pipeline is still working correctly —
+the compressor is doing its job.
+
+**To inspect what was compressed:** Enable prompt flow debug:
+```bash
+MRKRABS_PROMPT_FLOW_DEBUG=1 python -m src.core.orchestrator --task "..."
+# Look at ~/.mrkrabs/debug/<task_id>/ for the compressed prompt
+```
+
+## Pipeline killed — resume from checkpoint
+
+**Symptom:** A long-running pipeline was killed mid-escalation (SIGTERM, session
+end, manual stop). All progress appears lost.
+
+**Fix:** Resume from the checkpoint that was written after the last completed tier:
+```python
+result = orch.execute_with_judge(
+    task_id="same-task-id-as-before",
+    context={"task_spec": "..."},
+    tiers=["l0-coder", "l1-coder", "l2-coder", "principal"],
+    max_retries_per_tier=3,
+    resume_from_checkpoint=True,
+)
+```
+
+Checkpoints are written to `docs/workflow/escalations/<task_id>_checkpoint.json`
+after every tier verdict. They contain:
+
+- `escalation_path` — tiers already completed (skipped on resume)
+- `accumulated_files` — files on disk from completed tiers (restored)
+- `retries_per_tier` — attempt counts per tier (restored)
+- `best_output` — highest-scoring output so far (restored)
+
+**To inspect a checkpoint:**
+```bash
+cat docs/workflow/escalations/<task_id>_checkpoint.json | python -m json.tool
+```
+
+**To reset and start fresh:** Delete the checkpoint file:
+```bash
+rm docs/workflow/escalations/<task_id>_checkpoint.json
+```
+
 ## OpenCode writes files to wrong directory
 
 **Symptom:** Files appear in the MR-Krabs repo instead of the target project.
