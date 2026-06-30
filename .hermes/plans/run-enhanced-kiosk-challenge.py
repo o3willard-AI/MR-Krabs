@@ -19,6 +19,8 @@ import os
 import sys
 import time
 import json
+import shutil
+import tempfile
 from pathlib import Path
 
 # ── Config ──────────────────────────────────────────────────────────
@@ -257,6 +259,12 @@ def main():
 
     orch = LLMOrchestrator()
 
+    # Create a clean temp directory for the build — prevents OpenCode
+    # from analyzing existing files instead of writing new ones.
+    build_dir = Path(tempfile.mkdtemp(prefix="kiosk-challenge-"))
+    print(f"  Build dir:  {build_dir}")
+    print()
+
     # Clean any stale checkpoints
     orch._clear_checkpoint("enhanced-kiosk")
 
@@ -281,7 +289,8 @@ def main():
         max_retries_per_tier=3,
         judge_model="judge",
         timeout_seconds=600,
-        plan_first=False,  # Let deterministic splitter handle this (20 files/pass)
+        plan_first=False,
+        project_root=str(build_dir),
     )
 
     elapsed = time.monotonic() - start
