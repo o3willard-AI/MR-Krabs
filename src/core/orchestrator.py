@@ -607,6 +607,22 @@ class LLMOrchestrator:
         """Extract system prompt from template."""
         return template  # template already contains the full prompt
 
+    def _get_opencode_rules(self) -> str:
+        """Load domain-specific coding rules for OpenCode invocations.
+
+        These rules are written to a temp file and attached via
+        `opencode run -f <rules_file>`. OpenCode treats -f attachments
+        as project context that persists through auto-compaction,
+        unlike user-message-embedded rules that get summarized away.
+
+        Loads docs/workflow/templates/code-opencode-rules.md.
+        Returns empty string if the template doesn't exist (graceful degradation).
+        """
+        rules_path = self.workflow_dir / "templates" / "code-opencode-rules.md"
+        if rules_path.exists():
+            return rules_path.read_text()
+        return ""
+
     def _is_protected_file(self, path: str) -> tuple[bool, str | None]:
         """Check whether a file path matches protected patterns. (R2)
 
@@ -998,6 +1014,19 @@ class LLMOrchestrator:
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n{user_prompt}"
 
+        # ── Attach coding rules via -f (survives auto-compaction) ────
+        rules_content = self._get_opencode_rules()
+        rules_path = None
+        if rules_content:
+            import tempfile
+            rules_file = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".md", prefix="mrkrabs_opencode_rules_",
+                delete=False,
+            )
+            rules_file.write(rules_content)
+            rules_file.close()
+            rules_path = rules_file.name
+
         # Snapshot files before execution to discover writes
         before_files: set[str] = set()
         if workdir_path.exists():
@@ -1013,8 +1042,11 @@ class LLMOrchestrator:
                   f"prompt={len(full_prompt)}chars, "
                   f"timeout={timeout}s, workdir={workdir}")
 
-        # Build OpenCode command
-        oc_cmd = ["opencode", "run", "--model", model_spec, full_prompt]
+        # Build OpenCode command — attach rules file via -f for persistence
+        oc_cmd = ["opencode", "run", "--model", model_spec]
+        if rules_path:
+            oc_cmd.extend(["-f", rules_path])
+        oc_cmd.append(full_prompt)
 
         try:
             proc = subprocess.run(
@@ -1025,6 +1057,9 @@ class LLMOrchestrator:
                 cwd=workdir,
             )
         except subprocess.TimeoutExpired:
+            if rules_path:
+                try: os.unlink(rules_path)
+                except OSError: pass
             return {
                 "success": False,
                 "error": f"OpenCode timeout ({timeout}s)",
@@ -1032,12 +1067,18 @@ class LLMOrchestrator:
                 "timed_out": True,
             }
         except FileNotFoundError:
+            if rules_path:
+                try: os.unlink(rules_path)
+                except OSError: pass
             return {
                 "success": False,
                 "error": "OpenCode not installed",
                 "ready_for_escalation": True,
             }
         except Exception as e:
+            if rules_path:
+                try: os.unlink(rules_path)
+                except OSError: pass
             return {
                 "success": False,
                 "error": str(e),
@@ -1045,6 +1086,13 @@ class LLMOrchestrator:
             }
 
         duration = time.monotonic() - start_time
+
+        # Clean up temp rules file
+        if rules_path:
+            try:
+                os.unlink(rules_path)
+            except OSError:
+                pass
 
         # Discover written files (new + modified since snapshot)
         written_paths: list[str] = []
