@@ -141,13 +141,14 @@ class Judge:
             return None  # All strategies exhausted
 
     
-    def evaluate(self, task: str, output: str, model_profile_key: Optional[str] = None) -> Verdict:
+    def evaluate(self, task: str, output: str, model_profile_key: Optional[str] = None, spec: Optional[dict[str, list[str]]] = None) -> Verdict:
         """Evaluate code/text output against the specified task.
         
         Args:
             task: The original task description
             output: The output to evaluate
-            model_profile_key: Optional model profile key for known-failure injection
+            model_profile_key: Optional model_profile_key for known-failure injection
+            spec: Optional dict with 'success_criteria', 'constraints', 'anti_patterns'
         """
         # Truncate output if it's too long (8000 chars max before sending to judge)
         if len(output) > 8000:
@@ -301,6 +302,22 @@ Return ONLY valid JSON (no markdown, no explanation outside the JSON):
                             f"- {icon} **{kf.trigger_pattern()}**: {kf.feedback}\n"
                         )
                     prompt += "".join(failure_lines)
+            # ── Structured task contract (Article Section 4) ────────────
+            if spec:
+                spec_lines = ["\n\n## Acceptance Criteria\n\n"]
+                if spec.get("success_criteria"):
+                    spec_lines.append("**Must satisfy ALL of:**\n")
+                    for i, criterion in enumerate(spec["success_criteria"], 1):
+                        spec_lines.append(f"{i}. {criterion}\n")
+                if spec.get("constraints"):
+                    spec_lines.append("\n**Must NOT violate:**\n")
+                    for i, constraint in enumerate(spec["constraints"], 1):
+                        spec_lines.append(f"{i}. {constraint}\n")
+                if spec.get("anti_patterns"):
+                    spec_lines.append("\n**Known anti-patterns (score < 0.5 if matched):**\n")
+                    for i, ap in enumerate(spec["anti_patterns"], 1):
+                        spec_lines.append(f"{i}. {ap}\n")
+                prompt += "".join(spec_lines)
             # Inject the actual task and output (not in template placeholders)
             prompt += f"\n\n## Task to Evaluate\n\n{task}\n\n## Output to Evaluate\n\n{output}"
         

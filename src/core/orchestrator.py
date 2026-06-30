@@ -1465,6 +1465,32 @@ class LLMOrchestrator:
         except OSError:
             pass
 
+    @staticmethod
+    def _categorize_error(verdict) -> str:
+        """Categorize a judge verdict into an error category for pattern detection.
+
+        Returns one of: 'empty_output', 'truncation', 'wrong_approach',
+        'syntax_error', 'missing_files', 'unknown'.
+        """
+        if verdict is None:
+            return "unknown"
+
+        critique = (verdict.critique or "").lower()
+        score = verdict.score if hasattr(verdict, 'score') else 0.0
+
+        if score < 0.1:
+            return "empty_output"
+        if "truncat" in critique or "incomplete" in critique:
+            return "truncation"
+        if "syntax" in critique or "indentation" in critique or "parse" in critique:
+            return "syntax_error"
+        if "missing" in critique and ("file" in critique or "module" in critique):
+            return "missing_files"
+        if "wrong approach" in critique or "misunderstand" in critique:
+            return "wrong_approach"
+
+        return "unknown"
+
     def execute_with_judge(
         self,
         task_id: str,
@@ -1583,6 +1609,12 @@ class LLMOrchestrator:
         best_output: dict[str, Any] = {}  # best output across all tiers for Principal handoff
         accumulated_files: dict[str, int] = {}  # path → bytes from completed tiers (R1 incremental pass-through)
         verdict = None  # initialized before retry loop; set by judge evaluation
+
+        # ── Consecutive error tracking (Article Pillar 4) ─────────────────
+        last_error_category: str | None = None
+        consecutive_failures: int = 0
+        MAX_CONSECUTIVE_FAILURES = 3
+        escalated_by_consecutive_errors: bool = False
 
         for tier in tiers:
             feedback = ""
@@ -1707,11 +1739,22 @@ class LLMOrchestrator:
                 # Route through OpenCode (default), PI (fallback), or raw LLM
                 has_opencode = bool(self.opencode_models.get(tier.lower()))
                 has_pi = bool(self.pi_models.get(tier.lower()))
+
+                # ── Fix-mode prompt selection (Gap 4) ────────────────────────
+                # On retry with feedback, use the fix prompt (targeted, minimal changes).
+                # On fresh attempt, use the build prompt.
+                if feedback:
+                    current_sp = self._get_agent_system_prompt("fix")
+                    current_pi_sp = self._get_pi_system_prompt("fix")
+                else:
+                    current_sp = agent_system_prompt
+                    current_pi_sp = pi_system_prompt
+
                 if has_opencode:
                     result = self._execute_opencode_tier(
                         tier,
                         str(user_prompt),
-                        system_prompt=agent_system_prompt,
+                        system_prompt=current_sp,
                         retry_num=retry_num,
                         project_root=project_root,
                     )
@@ -1719,7 +1762,7 @@ class LLMOrchestrator:
                     result = self._execute_pi_tier(
                         tier,
                         str(user_prompt),
-                        system_prompt=pi_system_prompt,
+                        system_prompt=current_pi_sp,
                         retry_num=retry_num,
                         project_root=project_root,
                     )
@@ -1818,6 +1861,9 @@ class LLMOrchestrator:
                     profile_key = tier_config.get("profile")
                     if profile_key:
                         eval_kwargs["model_profile_key"] = profile_key
+                    task_spec_dict = context.get("spec")
+                    if task_spec_dict:
+                        eval_kwargs["spec"] = task_spec_dict
                     verdict = judge.evaluate(**eval_kwargs)
                 except Exception as e:
                     # Judge unavailable — degrade gracefully, treat as rejection
@@ -1937,6 +1983,22 @@ class LLMOrchestrator:
             if hasattr(self, '_feedback_history'):
                 self._feedback_history.pop(tier_fb_key, None)
 
+            # ── Consecutive error tracking ──────────────────────────────────
+            error_category = self._categorize_error(verdict)
+            if error_category == last_error_category:
+                consecutive_failures += 1
+            else:
+                last_error_category = error_category
+                consecutive_failures = 1
+
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                print(f"[CONSECUTIVE] {consecutive_failures} consecutive tier "
+                      f"failures with '{error_category}' — skipping remaining "
+                      f"tiers → Principal")
+                escalation_path.append(tier)
+                escalated_by_consecutive_errors = True
+                break  # exit tier loop, fall through to Principal escalation
+
             if fail_up_aborted:
                 # FailUp aborted intentionally — skip failure actions
                 escalation_path.append(tier)
@@ -2017,7 +2079,8 @@ class LLMOrchestrator:
             "task_id": task_id,
             "success": False,
             "output": None,
-            "tier_used": None,
+            "tier_used": "Principal" if escalated_by_consecutive_errors else None,
+            "escalated_to_principal": True if escalated_by_consecutive_errors else None,
             "attempts_total": attempts_total,
             "retries_per_tier": retries_per_tier,
             "verdict": None,
