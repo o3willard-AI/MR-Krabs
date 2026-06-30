@@ -1121,6 +1121,7 @@ class LLMOrchestrator:
 
         output = (proc.stderr or proc.stdout or "").strip()
         # OpenCode writes TUI/text to stderr by default; stdout may be empty.
+        print(f"  OC output: {len(output)} chars, {len(written_paths)} files on disk")
 
         # R4: Dump OpenCode input/output to debug dir
         self._prompt_flow_logger.log(
