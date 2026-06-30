@@ -1427,6 +1427,46 @@ class LLMOrchestrator:
             total_duration += sub_result.get("duration_seconds", 0)
 
             if not sub_result["success"]:
+                # ── Adaptive re-split on truncation ──────────────────
+                # When context window truncation is detected, halve the
+                # per-pass budget and re-split ALL remaining files
+                # (including this pass's unwritten files + future passes).
+                # This adapts to any model/server without hardcoded estimates.
+                if sub_result.get("truncated"):
+                    # Collect remaining file refs: unwritten from this pass + all future passes
+                    unwritten_this_pass = [
+                        f for f in subtask.files
+                        if f.path not in accumulated_files
+                        and (not sub_result.get("written_paths")
+                             or f.path not in sub_result.get("written_paths", []))
+                    ]
+                    # Salvage any files that WERE written before truncation
+                    if sub_result.get("files"):
+                        accumulated_files.extend(sub_result["files"].keys())
+                    elif sub_result.get("written_paths"):
+                        accumulated_files.extend(sub_result["written_paths"])
+
+                    future_refs = [
+                        f for p in passes[passes.index(subtask) + 1:]
+                        for f in p.files
+                    ]
+                    all_remaining = unwritten_this_pass + future_refs
+                    if all_remaining:
+                        new_limit = max(1, len(subtask.files) // 2)
+                        new_passes = split_into_passes(all_remaining, max_files=new_limit)
+                        if new_passes:
+                            print(f"  Truncated — re-splitting {len(all_remaining)} "
+                                  f"remaining files with limit {new_limit}/pass "
+                                  f"(was {len(subtask.files)}/pass)")
+                            # Replace future passes with re-split versions
+                            for i, ns in enumerate(new_passes):
+                                ns.pass_num = subtask.pass_num + i
+                            # Truncate the passes list at the failed subtask
+                            idx = passes.index(subtask)
+                            passes[idx:] = new_passes
+                            continue
+
+                # Non-truncation failure — abort remaining passes
                 return {
                     "task_id": task_id, "success": False,
                     "output": f"Pass {subtask.pass_num} failed",
@@ -1779,6 +1819,7 @@ class LLMOrchestrator:
         consecutive_failures: int = 0
         MAX_CONSECUTIVE_FAILURES = 3
         escalated_by_consecutive_errors: bool = False
+        any_truncation: bool = False  # true if any verdict cited truncation
 
         for tier in tiers:
             feedback = ""
@@ -2149,6 +2190,8 @@ class LLMOrchestrator:
 
             # ── Consecutive error tracking ──────────────────────────────────
             error_category = self._categorize_error(verdict)
+            if error_category == "truncation":
+                any_truncation = True
             if error_category == last_error_category:
                 consecutive_failures += 1
             else:
@@ -2252,5 +2295,6 @@ class LLMOrchestrator:
             "escalation_path": escalation_path,
             "duration_seconds": time.monotonic() - start_mono,
             "tool_results": None,
+            "truncated": any_truncation,
             "pipeline_health": self.monitor.check_health(),
         }
