@@ -150,3 +150,79 @@ class TestMultiPassFailure:
                 )
                 assert result['success'] is False
                 assert 'pass' in str(result.get('output', '')).lower()
+
+
+class TestPrincipalEscalationOnUnknownContext:
+    """Verify escalation to Principal when context window can't be determined."""
+
+    def test_unknown_context_escalates_to_principal(self):
+        """When the server can't be queried, escalate instead of guessing."""
+        o = LLMOrchestrator()
+
+        files = '\n'.join(f'File: src/parousia/module_{i}.py' for i in range(55))
+        spec = f"Modify these files:\n{files}"
+
+        # Both query_context_window and resolve_base_url fail → Principal escalation
+        with patch('src.core.token_budget.query_context_window', return_value=None), \
+             patch('src.core.token_budget.resolve_base_url', return_value=None):
+
+            result = o.execute_with_judge(
+                task_id='test-unknown-ctx',
+                context={'task_spec': spec},
+                tiers=['L0-Coder'],
+                max_retries_per_tier=1,
+                judge_model="Judge",
+            )
+
+            assert result['success'] is False
+            assert result['escalated_to_principal'] is True
+            assert result['escalation_reason'] == 'unknown_context_window'
+            assert result['escalation_context']['reason'] == 'unknown_context_window'
+            assert result['escalation_context']['tier'] == 'L0-Coder'
+            assert result['escalation_context']['file_count'] == 55
+            assert 'n_ctx_override' in result['escalation_context']['help_text']
+
+    def test_n_ctx_override_bypasses_server_query(self):
+        """When Principal provides n_ctx_override, skip server query entirely."""
+        o = LLMOrchestrator()
+
+        files = '\n'.join(f'File: src/parousia/module_{i}.py' for i in range(55))
+        spec = f"Modify these files:\n{files}"
+
+        # Even with server unreachable, n_ctx_override lets it proceed
+        with patch('src.core.token_budget.query_context_window',
+                   side_effect=Exception("should not be called")), \
+             patch('src.core.token_budget.resolve_base_url',
+                   side_effect=Exception("should not be called")):
+
+            # Pass n_ctx_override — should skip server query entirely
+            with patch.object(o, 'execute_with_judge', wraps=o.execute_with_judge):
+                original = o.execute_with_judge
+
+                def fake_ej(**kwargs):
+                    tid = kwargs.get('task_id', '')
+                    if '-p' in tid:
+                        return {
+                            "task_id": tid, "success": True,
+                            "output": "Pass DONE",
+                            "files": {"src/parousia/module_0.py": "content"},
+                            "tier_used": "L0-Coder",
+                            "attempts_total": 1,
+                            "duration_seconds": 0.1,
+                        }
+                    return original(**kwargs)
+
+                with patch.object(o, 'execute_with_judge', side_effect=fake_ej):
+                    result = o.execute_with_judge(
+                        task_id='test-override',
+                        context={
+                            'task_spec': spec,
+                            'n_ctx_override': 65536,
+                        },
+                        tiers=['L0-Coder'],
+                        max_retries_per_tier=1,
+                        judge_model="Judge",
+                    )
+                    # Should succeed without querying the server
+                    assert result['success'] is True
+                    assert result.get('pass_count', 1) >= 2

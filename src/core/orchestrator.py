@@ -1645,11 +1645,50 @@ class LLMOrchestrator:
                         n_ctx = query_context_window(base_url)
 
                 if not n_ctx:
-                    # Can't reach server — fall back to hardcoded ceiling.
-                    # MAX_FILES_PER_PASS is conservative for unknown context.
-                    dynamic_limit = MAX_FILES_PER_PASS
-                    print(f"  Budget: unreachable server → "
-                          f"{MAX_FILES_PER_PASS} files/pass (hardcoded ceiling)")
+                    # Can't determine context window — escalate to Principal Agent.
+                    # A hardcoded fallback (50 files) is wrong >90% of the time.
+                    # The Principal can cross-reference server configs, /v1/models,
+                    # and systemd unit files to provide an accurate n_ctx.
+                    principal_context = {
+                        "reason": "unknown_context_window",
+                        "tier": tiers_list[0],
+                        "opencode_model": self.opencode_models.get(
+                            tiers_list[0].lower()
+                        ),
+                        "pi_model": self.pi_models.get(tiers_list[0].lower()),
+                        "attempted_base_url": base_url,
+                        "task_spec_preview": task_spec_str[:500],
+                        "file_count": len(file_refs),
+                        "help_text": (
+                            "MR-Krabs cannot determine the context window for "
+                            f"tier '{tiers_list[0]}' on the target LLM server.\n\n"
+                            "To resolve: determine the n_ctx value (check server "
+                            "config, /v1/models, systemd unit, or /slots endpoint), "
+                            "then re-submit this task with "
+                            "context['n_ctx_override'] = <value>."
+                        ),
+                    }
+                    print(f"[PRINCIPAL] Cannot determine context window for "
+                          f"tier '{tiers_list[0]}' — escalating to Principal Agent")
+                    return {
+                        "task_id": task_id,
+                        "success": False,
+                        "escalated_to_principal": True,
+                        "escalation_reason": "unknown_context_window",
+                        "tier_used": "Principal",
+                        "output": None,
+                        "escalation_context": principal_context,
+                        "attempts_total": 0,
+                        "retries_per_tier": {},
+                        "cost_summary": self.cost_tracker.get_summary(),
+                        "escalation_path": ["Principal"],
+                        "duration_seconds": 0.0,
+                        "message": (
+                            "Context window could not be determined for "
+                            f"tier '{tiers_list[0]}'. Provide "
+                            "n_ctx_override in context to continue."
+                        ),
+                    }
 
                 dynamic_limit = calculate_pass_capacity(
                     spec_text=task_spec_str,
