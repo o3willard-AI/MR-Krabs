@@ -1046,7 +1046,8 @@ class LLMOrchestrator:
                   f"timeout={timeout}s, workdir={workdir}")
 
         # Build OpenCode command — prompt first, then -f (array flag consumes next arg)
-        oc_cmd = ["opencode", "run", "--model", model_spec, full_prompt]
+        oc_cmd = ["opencode", "run", "--model", model_spec,
+                   "--dangerously-skip-permissions", full_prompt]
         if rules_path:
             oc_cmd.extend(["-f", rules_path])
 
