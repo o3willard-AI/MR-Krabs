@@ -271,7 +271,7 @@ def main():
     print("Starting pipeline...")
     print(f"  Tiers:     L0-Coder → Principal")
     print(f"  Retries:   3 per tier")
-    print(f"  Plan:      auto (deterministic splitter for >20 files)")
+    print(f"  Plan:      auto (deterministic splitter for >50 files)")
     print(f"  Self-improve: MRKRABS_SELF_IMPROVE=1")
     print(f"  Debug:     MRKRABS_PROMPT_FLOW_DEBUG=1")
     print()

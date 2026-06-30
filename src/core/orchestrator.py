@@ -1115,12 +1115,6 @@ class LLMOrchestrator:
                         except OSError:
                             pass
 
-        # Debug: log file discovery results
-        print(f"  OpenCode files: {len(written_paths)} discovered "
-              f"(before={len(before_files)}, after={len(after_files)}, "
-              f"new={len(after_files - before_files)}, "
-              f"modified={len(written_paths) - len(after_files - before_files)})")
-
         output = proc.stdout.strip() if proc.stdout else ""
 
         # R4: Dump OpenCode input/output to debug dir
