@@ -36,7 +36,7 @@ class TestMultiPassDetection:
         """Task with many file refs returns pass_count > 1."""
         o = LLMOrchestrator()
 
-        files = '\n'.join(f'File: src/parousia/module_{i}.py' for i in range(25))
+        files = '\n'.join(f'File: src/parousia/module_{i}.py' for i in range(55))
         spec = f"Modify these files:\n{files}"
 
         # Mock the recursive execute_with_judge to return success for each pass
@@ -53,8 +53,8 @@ class TestMultiPassDetection:
                     return {
                         "task_id": tid, "success": True,
                         "output": "Pass DONE",
-                        "files": {rf"src/parousia/module_{i}.py": "content"
-                                  for i in range(25)},
+                        "files": {f"src/parousia/module_{i}.py": "content"
+                                  for i in range(55)},
                         "tier_used": "L0-Coder",
                         "attempts_total": 1,
                         "duration_seconds": 0.1,
@@ -106,7 +106,7 @@ class TestMultiPassFailure:
         """If pass N fails, passes N+1,... are skipped."""
         o = LLMOrchestrator()
 
-        files = '\n'.join(f'File: src/parousia/module_{i}.py' for i in range(25))
+        files = '\n'.join(f'File: src/parousia/module_{i}.py' for i in range(55))
         spec = f"Modify these files:\n{files}"
 
         # Force split into 2 passes, first succeeds, second fails
@@ -118,7 +118,7 @@ class TestMultiPassFailure:
                 return {
                     "task_id": tid, "success": True,
                     "output": "PASS 1 DONE",
-                    "files": {f"src/parousia/module_{i}.py": "ok" for i in range(13)},
+                    "files": {f"src/parousia/module_{i}.py": "ok" for i in range(50)},
                     "tier_used": "L0-Coder",
                     "attempts_total": 1,
                     "duration_seconds": 0.1,

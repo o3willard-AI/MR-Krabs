@@ -1611,8 +1611,15 @@ class LLMOrchestrator:
         # Tasks with >MAX_FILES_PER_PASS file references are split
         # into sequential PI passes with accumulated state.
         # Skip when called from _execute_multi_pass — the parent already split.
+        # Skip when any tier uses OpenCode — auto-compaction handles overflow.
         task_spec_str = str(context.get("task_spec", ""))
-        if task_type == "code" and task_spec_str and not context.get("_multi_pass_child"):
+        _has_opencode_tier = any(
+            self.opencode_models.get(t.lower())
+            for t in (tiers or ["l0-coder", "l1-coder", "l2-coder", "principal"])
+        )
+        if (task_type == "code" and task_spec_str
+                and not context.get("_multi_pass_child")
+                and not _has_opencode_tier):
             file_refs = extract_file_refs(task_spec_str)
             if len(file_refs) > MAX_FILES_PER_PASS or plan_first:
                 passes = split_into_passes(file_refs)

@@ -1,4 +1,4 @@
-"""E2E test: multi-pass pipeline handles 22-file tasks (Pipeline Hardening Task 5)."""
+"""E2E test: multi-pass pipeline handles 55-file tasks (Pipeline Hardening Task 5)."""
 
 import os
 import tempfile
@@ -14,17 +14,17 @@ from src.core.task_splitter import (
 
 
 class TestE2EMultiPass:
-    """End-to-end: task spec with 22 files → split → pass specs are valid."""
+    """End-to-end: task spec with 55 files → split → pass specs are valid."""
 
-    def test_22_files_detected_and_split(self):
-        """22 file references → correct detection and pass count."""
+    def test_55_files_detected_and_split(self):
+        """55 file references → correct detection and pass count."""
         files = '\n'.join(
-            f'File: src/parousia/module_{i}.py' for i in range(22)
+            f'File: src/parousia/module_{i}.py' for i in range(55)
         )
-        spec = f"Modify these 22 files:\n{files}"
+        spec = f"Modify these 55 files:\n{files}"
 
         refs = extract_file_refs(spec)
-        assert len(refs) == 22
+        assert len(refs) == 55
 
         passes = split_into_passes(refs)
         assert len(passes) >= 2
@@ -38,14 +38,14 @@ class TestE2EMultiPass:
         for p in passes:
             for f in p.files:
                 all_files.add(f.path)
-        assert len(all_files) == 22
+        assert len(all_files) == 55
 
     def test_pass_specs_are_self_contained(self):
         """Each pass spec is complete and executable."""
         files = '\n'.join(
-            f'File: src/parousia/module_{i}.py' for i in range(22)
+            f'File: src/parousia/module_{i}.py' for i in range(55)
         )
-        spec = f"Modify these 22 files:\n{files}"
+        spec = f"Modify these 55 files:\n{files}"
         refs = extract_file_refs(spec)
         passes = split_into_passes(refs)
 
@@ -74,17 +74,17 @@ class TestE2EMultiPass:
             __import__('src.core.task_splitter', fromlist=['FileRef']).FileRef(
                 path=f"src/p1_file_{i}.py", action="modify",
                 section_start=i, section_end=i+5
-            ) for i in range(10)
+            ) for i in range(25)
         ] + [
             __import__('src.core.task_splitter', fromlist=['FileRef']).FileRef(
                 path=f"src/p2_file_{i}.py", action="modify",
                 section_start=i, section_end=i+5
-            ) for i in range(10)
+            ) for i in range(25)
         ] + [
             __import__('src.core.task_splitter', fromlist=['FileRef']).FileRef(
                 path=f"tests/test_{i}.py", action="modify",
                 section_start=i, section_end=i+5
-            ) for i in range(2)
+            ) for i in range(5)
         ]
 
         passes = split_into_passes(refs)
@@ -100,11 +100,11 @@ class TestE2EMultiPass:
                 assert "already written" in sub_spec.lower()
             accumulated.extend(f.path for f in subtask.files)
 
-        # All 22 files should be accumulated
-        assert len(accumulated) == 22
+        # All 55 files should be accumulated
+        assert len(accumulated) == 55
 
     def test_single_pass_for_small_task(self):
-        """Small tasks (≤20 files) run as single pass."""
+        """Small tasks (≤50 files) run as single pass."""
         spec = "Modify src/app.py and tests/test_app.py"
         refs = extract_file_refs(spec)
         passes = split_into_passes(refs)
