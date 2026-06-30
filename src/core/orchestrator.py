@@ -1398,7 +1398,10 @@ class LLMOrchestrator:
         total_attempts = 0
         total_duration = 0.0
 
-        for subtask in passes:
+        # Use while loop with index — re-split may mutate the passes list
+        pass_idx = 0
+        while pass_idx < len(passes):
+            subtask = passes[pass_idx]
             spec = generate_subtask_spec(
                 original_spec, subtask, subtask.pass_num,
                 len(passes), accumulated_files,
