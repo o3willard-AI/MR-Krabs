@@ -31,6 +31,7 @@ from src.core.task_splitter import (
     generate_subtask_spec,
     MAX_FILES_PER_PASS,
 )
+from src.core.pi_provider_map import validate_or_diagnose, get_registry
 
 # Configuration
 MAX_RETRIES = 3
@@ -677,6 +678,25 @@ class LLMOrchestrator:
                 "error": f"No PI model for tier {tier}",
                 "ready_for_escalation": True,
             }
+
+        # ── Pre-flight: validate model in PI registry ────────────
+        valid, diag = validate_or_diagnose(model_spec)
+        print(f"  [PI-DIAG] {tier}: {diag}")
+        if not valid:
+            print(f"  [PI-WARN] {tier}: model '{model_spec}' not in PI registry — "
+                  f"PI will fail. Check ~/.pi/agent/models.json")
+            # Continue anyway — PI will report its own error
+
+        # Pre-flight: server health check for local providers
+        provider_name = model_spec.split("/", 1)[0] if "/" in model_spec else model_spec
+        reg = get_registry()
+        prov_info = reg.get_provider(provider_name)
+        if prov_info and prov_info.get("base_url", "").startswith("http://192.168"):
+            reachable, health_msg = reg.check_server_health(provider_name)
+            if not reachable:
+                print(f"  [PI-WARN] {tier}: server unreachable — {health_msg}")
+            else:
+                print(f"  [PI-DIAG] {tier}: {health_msg}")
 
         timeout = self.pi_timeouts.get(tier.lower(), 600)
         pi_cmd = ["pi", "--mode", "json", "--model", model_spec, "--no-session"]
@@ -1337,7 +1357,7 @@ class LLMOrchestrator:
 
             sub_result = self.execute_with_judge(
                 task_id=sub_id,
-                context={"task_spec": spec},
+                context={"task_spec": spec, "_multi_pass_child": True},
                 task_type="code",
                 tiers=tiers,
                 max_retries_per_tier=max_retries_per_tier,
@@ -1542,8 +1562,9 @@ class LLMOrchestrator:
         # Replace LLM planner with deterministic file splitter.
         # Tasks with >MAX_FILES_PER_PASS file references are split
         # into sequential PI passes with accumulated state.
+        # Skip when called from _execute_multi_pass — the parent already split.
         task_spec_str = str(context.get("task_spec", ""))
-        if task_type == "code" and task_spec_str:
+        if task_type == "code" and task_spec_str and not context.get("_multi_pass_child"):
             file_refs = extract_file_refs(task_spec_str)
             if len(file_refs) > MAX_FILES_PER_PASS or plan_first:
                 passes = split_into_passes(file_refs)
