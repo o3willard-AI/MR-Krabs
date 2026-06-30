@@ -219,7 +219,7 @@ class TestJudgeEscalation(unittest.TestCase):
         second_call = mock_llm.call_args_list[1]
         user_prompt = second_call[0][2]  # positional arg index 2 = user_prompt
         self.assertIn("ADD MORE DETAIL", str(user_prompt))
-        self.assertIn("Previous Attempt Feedback", str(user_prompt))
+        self.assertIn("Previous Attempt 1 Feedback", str(user_prompt))
 
     # ── Cost Tracking (observer) ─────────────────────────────────
 
