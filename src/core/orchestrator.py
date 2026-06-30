@@ -1051,12 +1051,15 @@ class LLMOrchestrator:
             oc_cmd.extend(["-f", rules_path])
 
         try:
+            # OpenCode ignores subprocess.run(cwd=...) — must cd into
+            # the workdir before invoking. Use shell to chain commands.
+            cd_cmd = f"cd {shlex.quote(workdir)} && {' '.join(shlex.quote(a) for a in oc_cmd)}"
             proc = subprocess.run(
-                oc_cmd,
+                cd_cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
-                cwd=workdir,
+                shell=True,
             )
         except subprocess.TimeoutExpired:
             if rules_path:
