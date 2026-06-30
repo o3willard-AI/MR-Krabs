@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-MAX_FILES_PER_PASS = 50
+MAX_FILES_PER_PASS = 50  # Hard ceiling only — dynamic budget overrides this
 MAX_TESTS_PER_PASS = 50
 
 

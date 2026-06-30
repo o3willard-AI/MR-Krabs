@@ -39,14 +39,15 @@ class TestMultiPassDetection:
         files = '\n'.join(f'File: src/parousia/module_{i}.py' for i in range(55))
         spec = f"Modify these files:\n{files}"
 
-        # Mock the recursive execute_with_judge to return success for each pass
-        with patch.object(o, 'execute_with_judge', wraps=o.execute_with_judge) as mock_ej:
-            # Override the recursive calls to return success immediately
+        # Mock token budget: pretend we have a 32K context window
+        # so the dynamic splitter activates instead of escalating to Principal
+        with patch('src.core.token_budget.query_context_window', return_value=32768), \
+             patch('src.core.token_budget.resolve_base_url', return_value='http://mock:1234'):
+
+            # Mock the recursive execute_with_judge to return success for each pass
             original = o.execute_with_judge
-            call_count = [0]
 
             def fake_ej(**kwargs):
-                call_count[0] += 1
                 tid = kwargs.get('task_id', '')
                 if '-p' in tid:
                     # Pass sub-call: return success
@@ -109,39 +110,43 @@ class TestMultiPassFailure:
         files = '\n'.join(f'File: src/parousia/module_{i}.py' for i in range(55))
         spec = f"Modify these files:\n{files}"
 
-        # Force split into 2 passes, first succeeds, second fails
-        original_ej = o.execute_with_judge
+        # Mock token budget to avoid Principal escalation
+        with patch('src.core.token_budget.query_context_window', return_value=32768), \
+             patch('src.core.token_budget.resolve_base_url', return_value='http://mock:1234'):
 
-        def fake_ej(**kwargs):
-            tid = kwargs.get('task_id', '')
-            if '-p1' in tid:
-                return {
-                    "task_id": tid, "success": True,
-                    "output": "PASS 1 DONE",
-                    "files": {f"src/parousia/module_{i}.py": "ok" for i in range(50)},
-                    "tier_used": "L0-Coder",
-                    "attempts_total": 1,
-                    "duration_seconds": 0.1,
-                }
-            elif '-p2' in tid:
-                return {
-                    "task_id": tid, "success": False,
-                    "output": "",
-                    "error": "Empty output from PI",
-                    "attempts_total": 2,
-                    "duration_seconds": 1.0,
-                }
-            else:
-                # Top-level call: use original (unmocked) method
-                return original_ej(**kwargs)
+            # Force split into 2 passes, first succeeds, second fails
+            original_ej = o.execute_with_judge
 
-        with patch.object(o, 'execute_with_judge', side_effect=fake_ej):
-            result = o.execute_with_judge(
-                task_id='test-fail',
-                context={'task_spec': spec},
-                tiers=['L0-Coder'],
-                max_retries_per_tier=1,
-                judge_model="Judge",
-            )
-            assert result['success'] is False
-            assert 'pass' in str(result.get('output', '')).lower()
+            def fake_ej(**kwargs):
+                tid = kwargs.get('task_id', '')
+                if '-p1' in tid:
+                    return {
+                        "task_id": tid, "success": True,
+                        "output": "PASS 1 DONE",
+                        "files": {f"src/parousia/module_{i}.py": "ok" for i in range(50)},
+                        "tier_used": "L0-Coder",
+                        "attempts_total": 1,
+                        "duration_seconds": 0.1,
+                    }
+                elif '-p2' in tid:
+                    return {
+                        "task_id": tid, "success": False,
+                        "output": "",
+                        "error": "Empty output from PI",
+                        "attempts_total": 2,
+                        "duration_seconds": 1.0,
+                    }
+                else:
+                    # Top-level call: use original (unmocked) method
+                    return original_ej(**kwargs)
+
+            with patch.object(o, 'execute_with_judge', side_effect=fake_ej):
+                result = o.execute_with_judge(
+                    task_id='test-fail',
+                    context={'task_spec': spec},
+                    tiers=['L0-Coder'],
+                    max_retries_per_tier=1,
+                    judge_model="Judge",
+                )
+                assert result['success'] is False
+                assert 'pass' in str(result.get('output', '')).lower()

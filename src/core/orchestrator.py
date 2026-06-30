@@ -1609,25 +1609,66 @@ class LLMOrchestrator:
         self._prompt_flow_logger.task_id = task_id
 
         # ── Multi-pass detection ───────────────────────────
-        # Replace LLM planner with deterministic file splitter.
-        # Tasks with >MAX_FILES_PER_PASS file references are split
-        # into sequential passes with accumulated state.
-        # Skip when called from _execute_multi_pass — the parent already split.
+        # Dynamically sizes passes based on context window budget.
+        # Queries the target LLM server for actual n_ctx, estimates
+        # token requirements, and calculates files_per_pass.
+        # Falls back to MAX_FILES_PER_PASS if server unreachable.
         #
-        # NOTE: The limit exists because of context window constraints, not
-        # model class. At 32K context, 50 files/pass is a practical ceiling.
-        # Higher limits require larger KV cache (256K ctx would eliminate
-        # splitting entirely). Tune MAX_FILES_PER_PASS in task_splitter.py
-        # as context budgets grow.
+        # The hardcoded MAX_FILES_PER_PASS is a ceiling — never exceed it.
+        # The FLOOR_RATIO (50% of ceiling) is a safety floor — never go below.
+        # The actual number comes from: (n_ctx - input_budget) / avg_file_budget.
         task_spec_str = str(context.get("task_spec", ""))
         if (task_type == "code" and task_spec_str
                 and not context.get("_multi_pass_child")):
             file_refs = extract_file_refs(task_spec_str)
-            if len(file_refs) > MAX_FILES_PER_PASS or plan_first:
-                passes = split_into_passes(file_refs)
-                if len(passes) > 1:
-                    print(f"Multi-pass: {len(file_refs)} files → "
-                          f"{len(passes)} passes (max {MAX_FILES_PER_PASS}/pass)")
+            if len(file_refs) > 1:  # only split multi-file tasks
+                # ── Dynamic budget calculation ─────────────────────
+                from src.core.token_budget import (
+                    calculate_pass_capacity,
+                    resolve_base_url,
+                    query_context_window,
+                )
+                agent_sp = self._get_agent_system_prompt(task_type)
+                rules = self._get_opencode_rules()
+                tiers_list = tiers or ["l0-coder", "l1-coder", "l2-coder", "principal"]
+                n_ctx = context.get("n_ctx_override")  # Principal-provided override
+                base_url = None
+
+                # Try to resolve the first tier's server context window
+                if not n_ctx:
+                    base_url = resolve_base_url(
+                        tiers_list[0],
+                        self.opencode_models,
+                        self.pi_models,
+                    )
+                    if base_url:
+                        n_ctx = query_context_window(base_url)
+
+                if not n_ctx:
+                    # Can't reach server — fall back to hardcoded ceiling.
+                    # MAX_FILES_PER_PASS is conservative for unknown context.
+                    dynamic_limit = MAX_FILES_PER_PASS
+                    print(f"  Budget: unreachable server → "
+                          f"{MAX_FILES_PER_PASS} files/pass (hardcoded ceiling)")
+
+                dynamic_limit = calculate_pass_capacity(
+                    spec_text=task_spec_str,
+                    system_prompt_text=agent_sp,
+                    rules_text=rules,
+                    n_ctx=n_ctx,
+                    file_refs=file_refs,
+                )
+                override_tag = " (Principal override)" if context.get(
+                    "n_ctx_override"
+                ) else ""
+                print(f"  Budget: {n_ctx}ctx → {dynamic_limit} files/pass "
+                      f"(ceiling={MAX_FILES_PER_PASS}){override_tag}")
+
+                if len(file_refs) > dynamic_limit or plan_first:
+                    passes = split_into_passes(file_refs, max_files=dynamic_limit)
+                    if len(passes) > 1:
+                        print(f"Multi-pass: {len(file_refs)} files → "
+                              f"{len(passes)} passes (max {dynamic_limit}/pass)")
                     return self._execute_multi_pass(
                         task_id=task_id,
                         original_spec=task_spec_str,
