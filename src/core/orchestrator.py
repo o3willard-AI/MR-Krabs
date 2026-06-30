@@ -1900,7 +1900,9 @@ class LLMOrchestrator:
                 continue  # skip to next tier
 
             # --- Retry loop ---
-            for retry_num in range(1, max_retries_per_tier + 1):
+            retry_num = 1
+            provisional_bonus = False
+            while retry_num <= max_retries_per_tier:
                 # --- FailUp mid-retry check ---
                 check_mesh_fail_up()
                 if is_fail_up_active():
@@ -1985,6 +1987,7 @@ class LLMOrchestrator:
 
                 attempts_total += 1
                 retries_per_tier[tier] += 1
+                retry_num += 1
 
                 # ── Pipeline monitor: record coder output ──────────
                 if has_opencode or has_pi:
@@ -2163,16 +2166,17 @@ class LLMOrchestrator:
                     }
 
                 if verdict.provisional:
-                    # Provisionally accepted — coder makes targeted corrections
-                    # and returns for one final evaluation. Don't count against
-                    # retry budget — this is a polish pass, not a rewrite.
+                    # Provisional — grant one bonus retry for targeted fixes
+                    if not provisional_bonus:
+                        provisional_bonus = True
+                        max_retries_per_tier += 1  # bonus round for polish
                     print(f"Tier {tier} provisional: {verdict.critique[:200]}")
                     feedback = (
                         "PROVISIONALLY ACCEPTED. Your code is substantially correct. "
                         "Apply ONLY these targeted corrections — do NOT rewrite working code:\n\n"
                         + verdict.critique
                     )
-                    # Don't decrement retries_per_tier — provisional is a free revision
+                    retry_num += 1
                     continue
 
                 # Rejected — save feedback for next retry
