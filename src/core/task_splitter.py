@@ -206,11 +206,11 @@ def generate_subtask_spec(
 ## Key Rules
 - Complete implementations — NO stubs, NO TODO, NO pass
 - Validate ALL user inputs. Handle edge cases.
-- Match conventions — read existing files before writing
-- Use the write tool to create each file
+-{" Files listed under 'already written' are complete and correct. Do NOT read or explore them." if previous_files else ""}
+- Use the write tool to create each file NOW. Do NOT browse or list files first.
 
 Output DONE when all files in this pass are correctly written.
-Do NOT discuss, analyze, or plan — just write the files.
+Do NOT discuss, analyze, read existing files, or plan — just write the files.
 """
 
 
