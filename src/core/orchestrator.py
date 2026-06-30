@@ -362,11 +362,12 @@ class LLMOrchestrator:
     ) -> dict[str, Any]:
         """Call LLM with retry logic and optional global timeout."""
         last_error = None
-        start_time = time.monotonic()
+        start_time = time.time()  # wall clock for os.path.getmtime() comparison
+        start_mono = time.monotonic()  # monotonic for duration calculation
         effective_timeout = timeout_seconds or 300.0
 
         for attempt in range(MAX_RETRIES):
-            elapsed = time.monotonic() - start_time
+            elapsed = time.monotonic() - start_mono
             if elapsed >= effective_timeout:
                 return {
                     "success": False,
@@ -730,7 +731,8 @@ class LLMOrchestrator:
         else:
             cleanup_sp = None
 
-        start_time = time.monotonic()
+        start_time = time.time()  # wall clock for os.path.getmtime() comparison
+        start_mono = time.monotonic()  # monotonic for duration calculation
 
         # L1/L2 diagnostic: log model + prompt size for cloud tier debugging
         if tier.lower().startswith("l1") or tier.lower().startswith("l2"):
@@ -768,7 +770,7 @@ class LLMOrchestrator:
                 "ready_for_escalation": True,
             }
 
-        duration = time.monotonic() - start_time
+        duration = time.monotonic() - start_mono
 
         if proc.returncode != 0:
             if cleanup_sp:
@@ -1034,7 +1036,8 @@ class LLMOrchestrator:
                 if f.is_file() and ".git" not in f.parts:
                     before_files.add(str(f))
 
-        start_time = time.monotonic()
+        start_time = time.time()  # wall clock for os.path.getmtime() comparison
+        start_mono = time.monotonic()  # monotonic for duration calculation
 
         # L1/L2 diagnostic: log model + prompt size for cloud tier debugging
         if tier.lower().startswith("l1") or tier.lower().startswith("l2"):
@@ -1042,11 +1045,10 @@ class LLMOrchestrator:
                   f"prompt={len(full_prompt)}chars, "
                   f"timeout={timeout}s, workdir={workdir}")
 
-        # Build OpenCode command — attach rules file via -f for persistence
-        oc_cmd = ["opencode", "run", "--model", model_spec]
+        # Build OpenCode command — prompt first, then -f (array flag consumes next arg)
+        oc_cmd = ["opencode", "run", "--model", model_spec, full_prompt]
         if rules_path:
             oc_cmd.extend(["-f", rules_path])
-        oc_cmd.append(full_prompt)
 
         try:
             proc = subprocess.run(
@@ -1085,7 +1087,7 @@ class LLMOrchestrator:
                 "ready_for_escalation": True,
             }
 
-        duration = time.monotonic() - start_time
+        duration = time.monotonic() - start_mono
 
         # Clean up temp rules file
         if rules_path:
@@ -1678,7 +1680,8 @@ class LLMOrchestrator:
         
         tiers = tiers or ["L0-Coder", "L1-Coder", "L2-Coder", "Principal"]
 
-        start_time = time.monotonic()
+        start_time = time.time()  # wall clock for os.path.getmtime() comparison
+        start_mono = time.monotonic()  # monotonic for duration calculation
         attempts_total = 0
         retries_per_tier: dict[str, int] = {}
         escalation_path: list[str] = []
@@ -1737,7 +1740,7 @@ class LLMOrchestrator:
                     "retries_per_tier": retries_per_tier,
                     "cost_summary": self.cost_tracker.get_summary(),
                     "escalation_path": escalation_path + ["Principal"],
-                    "duration_seconds": time.monotonic() - start_time,
+                    "duration_seconds": time.monotonic() - start_mono,
                     "tool_results": None,
                     "message": (
                         "Task escalated to Principal Agent. MR-Krabs attempted "
@@ -2009,7 +2012,7 @@ class LLMOrchestrator:
                         "output": result["output"], "files": files,
                     }
 
-                    duration_seconds = time.monotonic() - start_time
+                    duration_seconds = time.monotonic() - start_mono
                     self._clear_checkpoint(task_id)
                     self._run_self_improve_if_enabled(task_id)
                     return {
@@ -2132,7 +2135,7 @@ class LLMOrchestrator:
                 confirmed, reason = wait_for_human(task_id)
                 if not confirmed:
                     # Abort — stop entire escalation
-                    duration_seconds = time.monotonic() - start_time
+                    duration_seconds = time.monotonic() - start_mono
                     return {
                         "task_id": task_id,
                         "success": False,
@@ -2162,7 +2165,7 @@ class LLMOrchestrator:
             "verdict": None,
             "cost_summary": self.cost_tracker.get_summary(),
             "escalation_path": escalation_path,
-            "duration_seconds": time.monotonic() - start_time,
+            "duration_seconds": time.monotonic() - start_mono,
             "tool_results": None,
             "pipeline_health": self.monitor.check_health(),
         }
