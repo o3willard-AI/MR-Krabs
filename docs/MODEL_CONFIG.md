@@ -3,21 +3,30 @@
 These are **examples** — not defaults. MR‑Krabs ships with no hardcoded
 models. Copy one of these as a starting point and adapt it to your setup.
 
+> **Important:** MR-Krabs is designed to work with
+> [llama.cpp](https://github.com/ggerganov/llama.cpp). All examples below use
+> llama.cpp as the model server. Other backends (LM Studio, Ollama, vLLM) are
+> **not recommended** — they have known issues with tool-call formats, jinja
+> template injection, and inconsistent stop-token behavior.
+
 ---
 
-## Example 1: Hybrid High-End (24 GB GPUs)
+## Example 1: Hybrid llama.cpp + OpenRouter (Recommended)
 
-Our .21/.23 setup. Local 30B+ MoE models for coding and planning,
-OpenRouter for the Judge and cloud fallbacks.
+Our .21/.23 setup. Local 30B+ models on llama.cpp for coding, OpenRouter for
+the Judge and cloud fallbacks. This is the configuration we use in production.
 
 ```yaml
 version: "1.0"
 
 providers:
-  litellm:
+  llama_cpp_21:
     type: openai_compatible
-    base_url: http://192.168.101.42:4000/v1
-    api_key_env: LITELLM_MASTER_KEY
+    base_url: http://192.168.101.21:8080/v1
+    timeout: 1800
+  llama_cpp_23:
+    type: openai_compatible
+    base_url: http://192.168.101.23:8080/v1
     timeout: 1800
   openrouter:
     type: openai_compatible
@@ -34,8 +43,8 @@ models:
     roles: [judge]
 
   l0-planner:
-    provider: litellm
-    model: mrk-planner-l0           # claude-distilled 35B on .21
+    provider: llama_cpp_21
+    model: claude-distilled-35b
     temperature: 0.0
     max_tokens: 16384
     roles: [planner]
@@ -50,15 +59,15 @@ models:
     tools: [file_read]
 
   orchestrator:
-    provider: litellm
-    model: mrk-orchestrator         # qwen30-coder 30B on .23
+    provider: llama_cpp_23
+    model: qwen3-coder-30b
     temperature: 0.0
     max_tokens: 32768
     roles: [orchestrator]
 
   l0-coder:
-    provider: litellm
-    model: mrk-coder-l0             # qwen30-coder 30B on .23
+    provider: llama_cpp_23
+    model: ornith-1.0-35b
     temperature: 0.0
     max_tokens: 32768
     roles: [coder]
@@ -84,6 +93,17 @@ models:
     provider: ""
     model: ""
     roles: [principal]
+
+# OpenCode coder backend (default)
+opencode_models:
+  l0-coder: llama_cpp_23/ornith-1.0-35b
+  l1-coder: openrouter/deepseek/deepseek-v4-flash
+  l2-coder: openrouter/xiaomi/mimo-v2.5
+
+opencode_timeouts:
+  l0-coder: 2400
+  l1-coder: 1200
+  l2-coder: 1200
 
 workflows:
   code:
@@ -113,50 +133,47 @@ budget:
 
 ---
 
-## Example 2: Budget 12 GB (All Local via LM Studio)
+## Example 2: Budget 12 GB (Single-GPU llama.cpp)
 
-Single-GPU build using Sushi 9B as the workhorse and Qwen2.5-Coder-3B
-for code generation. Judge scoring will be less calibrated than a cloud
-reasoning model — expect more false accepts. Add an OpenRouter fallback
-for the Judge if you have API access.
+Single-GPU build (e.g., RTX 3060 12GB) using a 9B–12B model quantized at
+Q4_K_M on llama.cpp. Judge scoring will be less calibrated than a cloud
+reasoning model — expect more false accepts. Add an OpenRouter Judge if
+you have API access.
 
 ```yaml
 version: "1.0"
 
 providers:
-  lmstudio_17:
+  llama_cpp_local:
     type: openai_compatible
-    base_url: http://192.168.101.17:1234/v1
+    base_url: http://192.168.101.17:8080/v1
     timeout: 1800
 
 models:
   judge:
-    provider: lmstudio_17
+    provider: llama_cpp_local
     model: qwen3.5-9b-sushi-coder-rl
     temperature: 0.0
     max_tokens: 2048
     roles: [judge]
-    profile: sushi-9b
 
   l0-planner:
-    provider: lmstudio_17
+    provider: llama_cpp_local
     model: qwen3.5-9b-sushi-coder-rl
     temperature: 0.0
     max_tokens: 4096
     roles: [planner]
     tools: [file_read]
-    profile: sushi-9b
 
   orchestrator:
-    provider: lmstudio_17
+    provider: llama_cpp_local
     model: qwen3.5-9b-sushi-coder-rl
     temperature: 0.0
     max_tokens: 4096
     roles: [orchestrator]
-    profile: sushi-9b
 
   l0-coder:
-    provider: lmstudio_17
+    provider: llama_cpp_local
     model: qwen2.5-coder-3b-instruct
     temperature: 0.0
     max_tokens: 4096
@@ -165,6 +182,12 @@ models:
 
   principal:
     roles: [principal]
+
+opencode_models:
+  l0-coder: llama_cpp_local/qwen2.5-coder-3b-instruct
+
+opencode_timeouts:
+  l0-coder: 1200
 
 workflows:
   code:
@@ -178,9 +201,9 @@ workflows:
 ```
 
 **Limitations of this build:**
-- Sushi maxes out at ~400 lines per build, ~75 lines per file
-- Sushi Judge calibration: 0.95 for correct code, 0.1 for SQL injection — passable but not as reliable as DeepSeek R1
-- 3B coder can handle single-file tasks; multi-file builds should escalate to Principal
+- Small models max out at ~400 lines per build, ~75 lines per file
+- Judge calibration less reliable than cloud reasoning models
+- 3B coder handles single-file tasks; multi-file builds should escalate to Principal
 - No cloud fallback — Principal is the only escalation path
 
 ---
@@ -188,6 +211,7 @@ workflows:
 ## Example 3: Full Cloud (All via OpenRouter)
 
 No local GPUs needed. Pay per token. Best for evaluation and prototyping.
+Use a local llama.cpp instance for the coder tier once you move to production.
 
 ```yaml
 version: "1.0"
@@ -255,6 +279,16 @@ models:
   principal:
     roles: [principal]
 
+opencode_models:
+  l0-coder: openrouter/x-ai/grok-4.1-fast
+  l1-coder: openrouter/google/gemini-2.5-flash
+  l2-coder: openrouter/anthropic/claude-haiku-4.5
+
+opencode_timeouts:
+  l0-coder: 600
+  l1-coder: 600
+  l2-coder: 600
+
 workflows:
   code:
     tiers: [l0-coder, l1-coder, l2-coder, principal]
@@ -268,16 +302,25 @@ workflows:
 
 ---
 
+## Model Server Comparison
+
+| Backend | Tool Calls | Stop Tokens | Reasoning Models | Recommended? |
+|---------|:----------:|:-----------:|:----------------:|:------------:|
+| **llama.cpp** | ✅ Reliable | ✅ Correct | ✅ Works | **Yes** |
+| LM Studio | ❌ Jinja bugs | ⚠️ Mixed | ❌ Breaks | No |
+| Ollama | ⚠️ Inconsistent | ⚠️ Mixed | ⚠️ Partial | No |
+| vLLM | ⚠️ Format varies | ❌ Ignored | ⚠️ Partial | No |
+
 ## Role Reference
 
 | Role | Purpose | Suggested Class |
 |---|---|---|
 | `judge` | Quality gate — scores all outputs | Reasoning model (R1, Sonnet, o4-mini) |
-| `l0-planner` | Task decomposition (first try) | 30B+ MoE local, Gemini 2.5 Pro |
+| `l0-planner` | Task decomposition (first try) | 30B+ MoE on llama.cpp, Gemini 2.5 Pro |
 | `l1-planner` | Fallback planner | Gemini 2.5 Flash, Claude Haiku |
 | `l2-planner` | Last-resort planner | Claude Sonnet 4.6 |
-| `orchestrator` | Task routing & coordination | 30B MoE local, Gemini Flash |
-| `l0-coder` | Code generation (first try) | 30B MoE local, Grok Fast |
+| `orchestrator` | Task routing & coordination | 30B MoE on llama.cpp, Gemini Flash |
+| `l0-coder` | Code generation (first try) | 30B MoE on llama.cpp (Ornith, Qwen3-Coder) |
 | `l1-coder` | Fallback coder | Gemini Flash, Claude Haiku |
 | `l2-coder` | Last-resort coder | Claude Sonnet 4.6 |
 | `principal` | Returns to caller agent | (your agent — Hermes, Claude Code, etc.) |

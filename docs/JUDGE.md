@@ -23,8 +23,8 @@ bad. This is the highest-leverage model choice in the system.
 
 ```
 "Judge": {
-    "model": "anthropic/claude-sonnet-4.6",
-    "temperature": 0.1,           # low temp for consistent evaluations
+    "model": "deepseek/deepseek-r1",
+    "temperature": 0.1,
     "provider": "openrouter",
     "role": "judge"
 }
@@ -33,11 +33,18 @@ bad. This is the highest-leverage model choice in the system.
 Low temperature (0.1) is critical — judging is a deterministic task. Higher
 temperatures introduce variance in scores and critique quality.
 
+### Serving the Judge
+
+We recommend running the Judge through OpenRouter (cloud) for reliability.
+Local reasoning models on llama.cpp also work — see [MODEL_CONFIG.md](MODEL_CONFIG.md)
+for llama.cpp provider configuration. We do **not** recommend LM Studio, Ollama,
+or vLLM for the Judge due to known issues with reasoning-model content extraction.
+
 ### Why Not Fine-Tuned Judges?
 
 JudgeLM and Prometheus show that fine-tuned Llama 7B–33B judges can achieve 90%+
 agreement with GPT-4 teachers. This is a viable path for production deployment
-where latencency and cost are concerns. For MR-Krabs, we use an API model for
+where latency and cost are concerns. For MR-Krabs, we use an API model for
 simplicity and quality, but fine-tuned judges are on the roadmap.
 
 ## Prompt Design
@@ -165,6 +172,12 @@ Threshold should be tuned per use case:
 - **0.6**: Rapid prototyping — accept "mostly works" code
 - **0.7**: Standard development — accept code with minor issues
 - **0.8+**: Production/strict — reject anything with known issues
+
+## Infrastructure Note
+
+The Judge connects to models via the same provider system as coder tiers.
+We recommend llama.cpp for local models and OpenRouter for cloud models.
+See [MODEL_CONFIG.md](MODEL_CONFIG.md) for provider configuration.
 
 ## Error Handling
 

@@ -303,10 +303,17 @@ class LLMOrchestrator:
         for d in [self.handoffs_dir, self.escalations_dir, self.tasks_dir]:
             d.mkdir(parents=True, exist_ok=True)
 
-        # PI coder backend — maps tier names to PI model specs from config.yaml
+        # Coder backends — OpenCode (default), PI (fallback)
+        # Config keys: opencode_models, opencode_timeouts, pi_models, pi_timeouts
         try:
             from src.core.config_loader import load_config
             cfg = load_config()
+            # OpenCode coder backend (default)
+            raw_oc = getattr(cfg, "opencode_models", None) or {}
+            self.opencode_models = {k.lower(): v for k, v in raw_oc.items()}
+            raw_ot = getattr(cfg, "opencode_timeouts", None) or {}
+            self.opencode_timeouts = {k.lower(): v for k, v in raw_ot.items()}
+            # PI coder backend (fallback)
             raw_pi = getattr(cfg, "pi_models", None) or {}
             self.pi_models = {k.lower(): v for k, v in raw_pi.items()}
             raw_pt = getattr(cfg, "pi_timeouts", None) or {}
@@ -320,6 +327,8 @@ class LLMOrchestrator:
                 ".mrkrabs/config.yaml", "pyproject.toml", ".git/*",
             ]
         except Exception:
+            self.opencode_models = {}
+            self.opencode_timeouts = {}
             self.pi_models = {}
             self.pi_timeouts = {}
             self.workflows = {}
@@ -330,6 +339,10 @@ class LLMOrchestrator:
         self._prompt_flow_logger = PromptFlowLogger(
             task_id="__init__", enabled=debug_enabled
         )
+
+        # Pipeline self-monitor — tracks role summaries and detects anomalies
+        from src.core.pipeline_monitor import PipelineMonitor
+        self.monitor = PipelineMonitor()
 
     def get_api_key(self, tier: str) -> str | None:
         """Get API key for specified tier."""
@@ -919,6 +932,175 @@ class LLMOrchestrator:
             "tool_results": tool_results,
         }
 
+    def _execute_opencode_tier(
+        self,
+        tier: str,
+        user_prompt: str,
+        system_prompt: str = "",
+        retry_num: int = 1,
+        project_root: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute a coder tier through OpenCode CLI (opencode run).
+
+        OpenCode is the default coder sub-agent. It handles file writes,
+        bash execution, and multi-file tasks with native tool use. After
+        OpenCode exits, the orchestrator scans the project_root for files
+        written and feeds them to the Judge.
+
+        Args:
+            tier: Tier key (l0-coder, l1-coder, l2-coder).
+            user_prompt: The task specification / user message.
+            system_prompt: Quality directives prepended to the prompt.
+            retry_num: Which retry attempt this is (for logging).
+            project_root: Working directory for OpenCode — file paths in
+                the task spec are relative to this directory. If None, uses
+                the orchestrator's CWD (typically the MR-Krabs repo).
+
+        Returns:
+            Dict matching call_llm_with_retry() shape:
+            {success, output, attempt, duration_seconds, written_paths, ...}
+        """
+        model_spec = self.opencode_models.get(tier.lower())
+        if not model_spec:
+            return {
+                "success": False,
+                "error": f"No OpenCode model for tier {tier}",
+                "ready_for_escalation": True,
+            }
+
+        timeout = self.opencode_timeouts.get(tier.lower(), 600)
+        workdir = project_root or str(self.project_root)
+        workdir_path = Path(workdir)
+
+        # Combine system prompt with user prompt
+        full_prompt = user_prompt
+        if system_prompt:
+            full_prompt = f"{system_prompt}\n\n{user_prompt}"
+
+        # Snapshot files before execution to discover writes
+        before_files: set[str] = set()
+        if workdir_path.exists():
+            for f in workdir_path.rglob("*"):
+                if f.is_file() and ".git" not in f.parts:
+                    before_files.add(str(f))
+
+        start_time = time.monotonic()
+
+        # L1/L2 diagnostic: log model + prompt size for cloud tier debugging
+        if tier.lower().startswith("l1") or tier.lower().startswith("l2"):
+            print(f"  [DIAG] {tier} r{retry_num}: opencode model={model_spec}, "
+                  f"prompt={len(full_prompt)}chars, "
+                  f"timeout={timeout}s, workdir={workdir}")
+
+        # Build OpenCode command
+        oc_cmd = ["opencode", "run", "--model", model_spec, full_prompt]
+
+        try:
+            proc = subprocess.run(
+                oc_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=workdir,
+            )
+        except subprocess.TimeoutExpired:
+            return {
+                "success": False,
+                "error": f"OpenCode timeout ({timeout}s)",
+                "ready_for_escalation": True,
+                "timed_out": True,
+            }
+        except FileNotFoundError:
+            return {
+                "success": False,
+                "error": "OpenCode not installed",
+                "ready_for_escalation": True,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "ready_for_escalation": True,
+            }
+
+        duration = time.monotonic() - start_time
+
+        # Discover written files (new + modified since snapshot)
+        written_paths: list[str] = []
+        after_files: set[str] = set()
+        if workdir_path.exists():
+            for f in workdir_path.rglob("*"):
+                if f.is_file() and ".git" not in f.parts:
+                    fp = str(f)
+                    after_files.add(fp)
+                    if fp not in before_files:
+                        written_paths.append(fp)
+                    else:
+                        # File existed before — check if modified during run
+                        try:
+                            mtime = os.path.getmtime(fp)
+                            if mtime > start_time:
+                                written_paths.append(fp)
+                        except OSError:
+                            pass
+
+        output = proc.stdout.strip() if proc.stdout else ""
+
+        # R4: Dump OpenCode input/output to debug dir
+        self._prompt_flow_logger.log(
+            agent=f"{tier}_retry{retry_num}",
+            input_text=(
+                f"=== SYSTEM + USER PROMPT ===\n{full_prompt}\n\n"
+                f"=== OPENCODE COMMAND ===\n{' '.join(oc_cmd[:4])}..."
+            ),
+            output_text=proc.stdout if proc.stdout else "(empty stdout)",
+        )
+
+        if proc.returncode != 0:
+            # Salvage any files written before failure
+            if written_paths:
+                print(f"  OpenCode exit {proc.returncode} — salvaged "
+                      f"{len(written_paths)} files")
+                return {
+                    "success": True,
+                    "output": (
+                        output
+                        or f"[OpenCode exit {proc.returncode} — "
+                        f"{len(written_paths)} files salvaged]"
+                    ),
+                    "attempt": retry_num,
+                    "duration_seconds": duration,
+                    "written_paths": written_paths,
+                    "partial": True,
+                    "ready_for_escalation": False,
+                }
+            return {
+                "success": False,
+                "error": proc.stderr[:500] if proc.stderr else f"exit {proc.returncode}",
+                "exit_code": proc.returncode,
+                "ready_for_escalation": True,
+                "duration_seconds": duration,
+            }
+
+        # Empty output but files were written — synthetic summary
+        if not output and written_paths:
+            print(f"  OpenCode wrote {len(written_paths)} files (no text output)")
+            output = f"[OpenCode wrote {len(written_paths)} files: "
+            output += ", ".join(
+                str(Path(p).relative_to(workdir_path)) for p in written_paths[:10]
+            )
+            if len(written_paths) > 10:
+                output += f" ... and {len(written_paths) - 10} more"
+            output += "]"
+
+        return {
+            "success": True,
+            "output": output,
+            "attempt": retry_num,
+            "duration_seconds": duration,
+            "written_paths": written_paths,
+        }
+
     # ── User prompt builder ─────────────────────────────────────────────
 
     def _build_user_prompt(self, task_id: str, tier: str, context: dict, template: str) -> str:
@@ -1341,6 +1523,17 @@ class LLMOrchestrator:
                     "retries_per_tier": dict(retries_per_tier),
                     "last_feedback": feedback,
                     "best_output": best_output,
+                    "pipeline_health": self.monitor.check_health(),
+                    "recent_actions": [
+                        {
+                            "role": a.role,
+                            "tier": a.tier,
+                            "action_type": a.action_type,
+                            "anomalies": a.anomaly_flags,
+                            "summary": a.summary,
+                        }
+                        for a in self.monitor.recent_actions(8)
+                    ],
                 }
                 print(f"[PRINCIPAL] Escalating to Principal Agent — "
                       f"MR-Krabs tiers exhausted: {escalation_path}")
@@ -1428,8 +1621,18 @@ class LLMOrchestrator:
                         f"Critique: {feedback}\n\nPlease fix these issues and try again."
                     )
 
-                # Route through PI if this tier has a PI model mapping
-                if self.pi_models.get(tier.lower()):
+                # Route through OpenCode (default), PI (fallback), or raw LLM
+                has_opencode = bool(self.opencode_models.get(tier.lower()))
+                has_pi = bool(self.pi_models.get(tier.lower()))
+                if has_opencode:
+                    result = self._execute_opencode_tier(
+                        tier,
+                        str(user_prompt),
+                        system_prompt=agent_system_prompt,
+                        retry_num=retry_num,
+                        project_root=project_root,
+                    )
+                elif has_pi:
                     result = self._execute_pi_tier(
                         tier,
                         str(user_prompt),
@@ -1447,44 +1650,60 @@ class LLMOrchestrator:
                 attempts_total += 1
                 retries_per_tier[tier] += 1
 
+                # ── Pipeline monitor: record coder output ──────────
+                if has_opencode or has_pi:
+                    self.monitor.record_coder_output(
+                        tier=tier,
+                        attempt=retries_per_tier[tier],
+                        output_chars=len(result.get("output", "")),
+                        files_written=len(result.get("written_paths", [])),
+                        truncated=result.get("partial", False),
+                        exit_code=result.get("exit_code"),
+                    )
+
                 if not result["success"]:
-                    if self.pi_models.get(tier.lower()):
+                    if has_opencode or has_pi:
+                        backend = "OpenCode" if has_opencode else "PI"
                         error_msg = result.get('error', 'unknown')
                         stderr_tail = str(result.get('stderr', ''))[-200:] if result.get('stderr') else ''
-                        print(f"Tier {tier} PI hard failure (attempt {retry_num}/{max_retries_per_tier}): {error_msg}")
+                        print(f"Tier {tier} {backend} hard failure (attempt {retry_num}/{max_retries_per_tier}): {error_msg}")
                         if result.get("exit_code"):
-                            print(f"Tier {tier} PI exited {result.get('exit_code', '?')} — {error_msg}")
+                            print(f"Tier {tier} {backend} exited {result.get('exit_code', '?')} — {error_msg}")
                         if stderr_tail:
-                            print(f"Tier {tier} PI stderr tail: {stderr_tail}")
+                            print(f"Tier {tier} {backend} stderr tail: {stderr_tail}")
                         # Don't escalate immediately — retry within this tier with coaching
-                        # Only unrecoverable failures (PI not installed) skip retry
-                        if retry_num < max_retries_per_tier and error_msg != "PI not installed":
+                        # Only unrecoverable failures ({backend} not installed) skip retry
+                        is_unrecoverable = error_msg in (
+                            "OpenCode not installed", "PI not installed"
+                        )
+                        if retry_num < max_retries_per_tier and not is_unrecoverable:
                             feedback = (
-                                f"PI PROCESS FAILURE (attempt {retry_num}): {error_msg}. "
+                                f"{backend} PROCESS FAILURE (attempt {retry_num}): {error_msg}. "
                                 "Your previous attempt produced no output or crashed. "
                                 "Simplify the task — write fewer files at once, "
                                 "reduce individual file sizes, or split into smaller sub-tasks. "
                                 "Try again with a simpler approach."
                             )
                             continue  # retry within same tier
-                        # Exhausted retries or unrecoverable — fall through to next tier
+                        # Exhausted retries or unrecoverable — break to post-loop failure handler
+                        break
                     else:
                         print(f"Tier {tier} HTTP failure: {result.get('error', 'unknown')}")
                         break
 
                 # --- Tool execution ---
-                if self.pi_models.get(tier.lower()) and "written_paths" in result:
-                    # PI wrote files — read them back for judge evaluation
-                    pi_paths = result.get("written_paths", [])
-                    tool_result = {"results": [], "tools_executed": len(pi_paths), "all_succeeded": True}
-                    for p in pi_paths:
+                if (has_opencode or has_pi) and "written_paths" in result:
+                    # OpenCode/PI wrote files — read them back for judge evaluation
+                    coder_paths = result.get("written_paths", [])
+                    tool_result = {"results": [], "tools_executed": len(coder_paths), "all_succeeded": True}
+                    for p in coder_paths:
                         try:
                             content = self.file_tools.file_read(p)
                             bytelen = len(content.get("content", ""))
                             tool_result["results"].append({
                                 "tool": "file_write", "path": p,
                                 "success": content.get("success", False),
-                                "content": content.get("content", "")[:2000],
+                                "content": content.get("content", ""),
                                 "bytes": bytelen,
                             })
                             # R1: track in accumulated_files for next tier's handoff
@@ -1524,6 +1743,26 @@ class LLMOrchestrator:
                         critique=f"Judge unavailable: {e}",
                         checks_passed=[], checks_failed=["judge_unavailable"],
                     )
+
+                # ── Pipeline monitor: record judge verdict ─────────
+                self.monitor.record_judge_verdict(
+                    tier=tier,
+                    attempt=retries_per_tier[tier],
+                    score=verdict.score,
+                    accepted=verdict.accepted,
+                    provisional=verdict.provisional,
+                )
+
+                # ── Pipeline monitor: self-interrogation ───────────
+                health = self.monitor.check_health()
+                if health.severity.name in ("WARN", "ERROR"):
+                    print(f"[MONITOR] {health.assessment}")
+                    for rec in health.recommendations:
+                        print(f"  → {rec}")
+                if health.escalate_to_principal:
+                    print(f"[MONITOR] ⛔ Pipeline health critical — "
+                          f"escalating to Principal with diagnostics")
+                    # Anomalies are surfaced in the Principal context
 
                 # --- Cost tracking (observer only, never blocks) ---
                 try:
@@ -1603,6 +1842,16 @@ class LLMOrchestrator:
 
             # Normal retry exhaustion — run failure action NOW (per-tier)
             escalation_path.append(tier)
+
+            # ── Pipeline monitor: record escalation ─────────────
+            next_tier_idx = tiers.index(tier) + 1 if tier in tiers else len(tiers)
+            next_tier = tiers[next_tier_idx] if next_tier_idx < len(tiers) else "Principal"
+            self.monitor.record_escalation(
+                from_tier=tier,
+                to_tier=next_tier,
+                reason=f"All {retries_per_tier[tier]} retries exhausted",
+            )
+
             failure_action = get_tier_failure_action(tier)
 
             if failure_action == FailureAction.LOG_ONLY:
@@ -1673,4 +1922,5 @@ class LLMOrchestrator:
             "escalation_path": escalation_path,
             "duration_seconds": time.monotonic() - start_time,
             "tool_results": None,
+            "pipeline_health": self.monitor.check_health(),
         }

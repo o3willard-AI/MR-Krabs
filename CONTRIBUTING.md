@@ -13,6 +13,14 @@ that preserve config-driven design are welcome.
   it goes in config.yaml, not a constant.
 - **Judge is the quality gate.** Changes to the judge prompt or criteria must
   be backed by before/after score data on a known task set.
+- **llama.cpp is the recommended model server.** Our test suite, CI, and
+  documentation target llama.cpp. Contributions adding first-class support for
+  other backends (LM Studio, Ollama, vLLM) should include a strong justification
+  — we've found these backends introduce bugs that are hard to diagnose
+  (jinja template injection, tool-call format inconsistencies, stop-token
+  behavior differences).
+- **OpenCode is the default coder sub-agent.** See [ARCHITECTURE.md](docs/ARCHITECTURE.md)
+  for the backend priority: OpenCode → PI (fallback) → raw LLM (last resort).
 
 ## Development Setup
 
@@ -48,7 +56,7 @@ All changes must pass the full test suite. Add tests for new behavior.
 - `test(scope): what was tested`
 - `docs(scope): what was documented`
 
-Scopes: `pipeline`, `judge`, `config`, `templates`, `tests`, `docs`
+Scopes: `pipeline`, `judge`, `config`, `templates`, `tests`, `docs`, `opencode`
 
 ## Pull Requests
 

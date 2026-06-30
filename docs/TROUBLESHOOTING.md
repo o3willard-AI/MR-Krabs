@@ -19,18 +19,27 @@ validate connectivity.
 **Fix:** Create `~/.mrkrabs/config.yaml`. Copy an example from
 [docs/MODEL_CONFIG.md](MODEL_CONFIG.md) and adapt it to your setup.
 
-## PI not found
+## OpenCode not found
 
-**Symptom:** `FileNotFoundError: pi` or `PI coding agent not found`.
+**Symptom:** `FileNotFoundError: opencode` or `OpenCode CLI not found`.
 
-**Fix:** Install PI globally:
+**Fix:** Install OpenCode globally:
 ```bash
-npm install -g @anthropic-ai/pi-coding-agent
+npm install -g opencode-ai@latest
 ```
-Or set `PI_PATH` to the local install:
+Verify with:
 ```bash
-export PI_PATH=/path/to/node_modules/.bin/pi
+opencode --version
+opencode auth list
 ```
+
+## PI not found (fallback backend)
+
+**Symptom:** `FileNotFoundError: pi` or `PI coding agent not found` when
+a tier is configured with `pi_models`.
+
+**Fix:** Either install PI (`npm install -g @anthropic-ai/pi-coding-agent`)
+or switch the tier to use OpenCode by configuring `opencode_models` instead.
 
 ## API key missing
 
@@ -38,21 +47,21 @@ export PI_PATH=/path/to/node_modules/.bin/pi
 
 **Fix:** Set the environment variable referenced in your config's `api_key_env`:
 ```bash
-export LITELLM_MASTER_KEY=sk-...
 export OPENROUTER_API_KEY=sk-or-...
 ```
 Run `python -m src.validators.startup` to verify connectivity.
 
-## Provider unreachable
+## llama.cpp server unreachable
 
-**Symptom:** Connection refused, timeout, or DNS errors when contacting the
-provider's `base_url`.
+**Symptom:** Connection refused, timeout, or DNS errors when contacting
+the llama.cpp server's `base_url`.
 
 **Fix:**
-1. Verify the provider is running: `curl http://192.168.101.42:4000/v1/models`
-2. Check the `base_url` in `~/.mrkrabs/config.yaml` is correct
-3. Verify network connectivity and firewall rules
+1. Verify llama.cpp is running: `curl http://192.168.101.23:8080/v1/models`
+2. Check the `base_url` in `~/.mrkrabs/config.yaml` matches the server
+3. Verify the model is loaded: `curl http://192.168.101.23:8080/v1/models | jq '.data[].id'`
 4. Check the `timeout` value isn't too low (1800 is safe for local models)
+5. If using a systemd service: `systemctl status llama-server`
 
 ## Templates validation fails
 
@@ -63,18 +72,25 @@ provider's `base_url`.
 - File must be at least 50 characters
 - Location: `docs/workflow/templates/`
 
-## PI output is empty or truncated
+## OpenCode output is empty or truncated
 
 **Symptom:** Judge receives empty output, or the task fails with no files written.
 
-**Likely cause:** The task is too large for a single PI call. The model's output
-token limit was reached mid-response.
+**Likely cause:** The task is too large for the model's context window, or the
+model exhausted its token budget on chain-of-thought reasoning before producing
+visible content.
 
 **Fix:**
 - Enable prompt flow debugging: `MRKRABS_PROMPT_FLOW_DEBUG=1`
 - Check `~/.mrkrabs/debug/<task_id>/` for the raw prompt and response
 - Break the task into smaller pieces (≤20 files per pass)
 - Raise `max_tokens` for the coder tier in config.yaml
+- For reasoning models (Claude-Distilled), use at least 200 `max_tokens`
+- Verify OpenCode is configured correctly:
+  ```bash
+  opencode run --model <provider>/<model> 'Write a file /tmp/oc-smoke-test.txt containing exactly: TOOL_OK'
+  cat /tmp/oc-smoke-test.txt
+  ```
 
 ## Judge rejects everything
 
@@ -88,70 +104,87 @@ token limit was reached mid-response.
 4. **Actual bug in output** — check `MRKRABS_PROMPT_FLOW_DEBUG=1` dumps and read
    the coaching reply for specific file/line issues.
 
-## Planner → PI → Judge: the feedback loop
+## OpenCode writes files to wrong directory
+
+**Symptom:** Files appear in the MR-Krabs repo instead of the target project.
+
+**Likely cause:** OpenCode resolves its working directory from where it was
+invoked. The orchestrator must pass `project_root` to `execute_with_judge()`.
+
+**Fix:** Always pass `project_root` when calling the orchestrator:
+```python
+result = orch.execute_with_judge(
+    task_id="my-task",
+    context={"task_spec": "..."},
+    tiers=["l0-coder"],
+    project_root="/path/to/target/project",  # ← required
+)
+```
+
+## Planner → OpenCode → Judge: the feedback loop
 
 The three most common "pipeline broken" failures are not bugs — they're
-mismatches between what the planner asks, what PI produces, and what the
+mismatches between what the planner asks, what OpenCode produces, and what the
 judge expects. These three components form a chain, and most failures
 trace to one link expecting something the previous link never promised.
 
-### The planner's job: give PI a spec it can actually execute
+### The planner's job: give OpenCode a spec it can actually execute
 
-PI is not an architect. It receives a task spec and writes code. If the
+OpenCode is not an architect. It receives a task spec and writes code. If the
 spec is vague ("add authentication"), verbose (16KB of architecture
-discussion), or asks for too much (30+ files in one pass), PI will produce
+discussion), or asks for too much (30+ files in one pass), OpenCode will produce
 garbage or truncate.
 
-**A good PI spec is:**
-- **Under 8 KB.** PI has a finite context window. Verbose plans cause
+**A good OpenCode spec is:**
+- **Under 8 KB.** OpenCode has a finite context window. Verbose plans cause
   instructions to scroll out of reach.
 - **File-by-file.** Name each file, describe its purpose, list what it
   imports and exports.
-- **Self-contained.** Don't reference conversations PI wasn't part of.
+- **Self-contained.** Don't reference conversations OpenCode wasn't part of.
 - **Bite-sized.** ≤20 files per pass. Larger tasks go through the
   multi-pass splitter.
 
-**Symptom of bad planner output:** PI writes files that don't match the
+**Symptom of bad planner output:** OpenCode writes files that don't match the
 task, skips files entirely, or produces a plan that truncates mid-sentence
 at ~16K tokens. The planner model may need a higher `max_tokens` or a
 different model. Non-reasoning models work better for planning —
 reasoning models often exhaust their token budget on chain-of-thought
 before producing content.
 
-### PI's natural behavior: multiple files, partial output, salvage
+### OpenCode's natural behavior: multiple files, partial output, salvage
 
-On real tasks, PI writes 5-15 files per pass. This is normal. On larger
-tasks, PI will often **truncate** — it writes 7 of 10 files before
+On real tasks, OpenCode writes 5-15 files per pass. This is normal. On larger
+tasks, OpenCode will often **truncate** — it writes 7 of 10 files before
 hitting its output token limit and the response cuts off.
 
 **This is expected, not a failure.** The pipeline's partial salvage
-mechanism detects files already on disk even when PI's output didn't
+mechanism detects files already on disk even when OpenCode's output didn't
 complete. A pass that wrote 7/10 files should be scored on those 7, and
 the remaining 3 should be retried — not the whole pass discarded.
 
-**Symptom of misconfiguration:** PI output is discarded wholesale because
+**Symptom of misconfiguration:** OpenCode output is discarded wholesale because
 it lacks a clean DONE marker. The files sit orphaned on disk while the
-orchestrator escalates to L1 → L2. Check that `pi_timeouts` in config.yaml
+orchestrator escalates to L1 → L2. Check that `opencode_timeouts` in config.yaml
 are generous enough (2400s for local L0, 1200s for cloud).
 
-### The judge's job: score what PI actually produces
+### The judge's job: score what OpenCode actually produces
 
-The judge evaluates files on disk, not PI's raw transcript. PI output
+The judge evaluates files on disk, not OpenCode's raw transcript. OpenCode output
 includes tool-call traces, JSON events, and process chatter — the judge
 never sees any of this. It sees completed file contents.
 
-**Judge calibration for PI output:**
-- PI writes production-style code: docstrings, type hints, tests. This is
+**Judge calibration for OpenCode output:**
+- OpenCode writes production-style code: docstrings, type hints, tests. This is
   normal — don't penalize for verbosity.
-- PI may write files in a different order than the spec listed. Judge by
+- OpenCode may write files in a different order than the spec listed. Judge by
   file content, not creation order.
-- On multi-file tasks, PI occasionally leaves minor inconsistencies
+- On multi-file tasks, OpenCode occasionally leaves minor inconsistencies
   between files (import paths, function signatures). These are in the
   0.6-0.8 range — acceptable at the default 0.7 threshold.
-- If the judge consistently scores PI output at 0.5-0.6, the threshold is
+- If the judge consistently scores OpenCode output at 0.5-0.6, the threshold is
   too high for the coder model. Lower it to 0.6, or upgrade the coder.
 
-**Symptom of judge misconfiguration:** Every PI output scores 0.4-0.5,
+**Symptom of judge misconfiguration:** Every OpenCode output scores 0.4-0.5,
 L0 always escalates, cloud costs spike. The judge and coder are
 mismatched — either lower the threshold or use a judge model that's
 calibrated to the coder's typical quality level.
@@ -164,9 +197,9 @@ The fastest way to diagnose a loop problem is to run one task with
 ```
 ~/.mrkrabs/debug/<task_id>/
 ├── planner-prompt.txt    # What the planner received
-├── planner-output.txt    # The spec it produced → fed to PI
-├── l0-coder-prompt.txt   # PI's system prompt + planner spec
-├── l0-coder-output.txt   # PI's raw transcript
+├── planner-output.txt    # The spec it produced → fed to OpenCode
+├── l0-coder-prompt.txt   # OpenCode's system prompt + planner spec
+├── l0-coder-output.txt   # OpenCode's raw transcript
 ├── judge-prompt.txt      # File contents fed to judge
 └── judge-output.json     # Score + coaching reply
 ```
@@ -177,6 +210,22 @@ The fastest way to diagnose a loop problem is to run one task with
   needs to be more specific
 - `judge-output.json` scored 0.3 but the files look correct → judge model
   is too small, or threshold needs recalibration
+
+## LM Studio / Ollama / vLLM issues
+
+**We do not recommend non-llama.cpp backends.** If you're using LM Studio,
+Ollama, or vLLM and encountering issues:
+
+- **LM Studio:** Known jinja template injection bug (`Unknown StringValue filter: safe`)
+  with OpenCode and PI. Non-community models fail with `Cannot call something that is
+  not a function: got UndefinedValue`. **Fix:** Migrate to llama.cpp.
+- **Ollama:** Tool-call format incompatibilities with some models. Stop-token
+  behavior inconsistent across model versions. **Fix:** Migrate to llama.cpp.
+- **vLLM:** Ignores custom stop tokens in some configurations. Reasoning model
+  content extraction differs from llama.cpp. **Fix:** Migrate to llama.cpp.
+
+See the [OpenCode skill references](https://github.com/o3willard-AI/MR-Krabs)
+for the full LM Studio jinja workaround (legacy, not recommended).
 
 ## Still stuck?
 

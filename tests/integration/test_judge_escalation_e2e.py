@@ -50,6 +50,9 @@ class TestJudgeEscalationE2E:
 
     def setup_method(self):
         self.orchestrator = LLMOrchestrator()
+        # Ensure PI backend is active regardless of config file
+        if not self.orchestrator.pi_models and not self.orchestrator.opencode_models:
+            self.orchestrator.pi_models = {"l0-coder": "test/model", "l1-coder": "test/model"}
         mock_ct = MagicMock()
         mock_ct.get_summary.return_value = {"daily_total": 0.0}
         self.orchestrator.cost_tracker = mock_ct

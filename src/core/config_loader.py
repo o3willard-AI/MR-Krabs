@@ -130,6 +130,8 @@ class MrKrabsConfig:
     profiles: Dict[str, ProfileConfig] = field(default_factory=dict)
     pi_models: Dict[str, str] = field(default_factory=dict)
     pi_timeouts: Dict[str, int] = field(default_factory=dict)
+    opencode_models: Dict[str, str] = field(default_factory=dict)
+    opencode_timeouts: Dict[str, int] = field(default_factory=dict)
     prompt_flow_debug: bool = False
     config_path: Optional[Path] = None
 
@@ -343,6 +345,8 @@ def load_config(path: Optional[str] = None) -> MrKrabsConfig:
     tier_failure_actions = raw.get("tier_failure_actions", {})
     pi_models = raw.get("pi_models", {})
     pi_timeouts = raw.get("pi_timeouts", {})
+    opencode_models = raw.get("opencode_models", {})
+    opencode_timeouts = raw.get("opencode_timeouts", {})
     prompt_flow_debug = raw.get("prompt_flow_debug", False)
 
     # Validate: every model's provider must be defined
@@ -371,6 +375,8 @@ def load_config(path: Optional[str] = None) -> MrKrabsConfig:
         profiles=profiles,
         pi_models=pi_models,
         pi_timeouts=pi_timeouts,
+        opencode_models=opencode_models,
+        opencode_timeouts=opencode_timeouts,
         prompt_flow_debug=prompt_flow_debug,
         config_path=config_path,
     )
@@ -562,7 +568,8 @@ def legacy_models(config: Optional[MrKrabsConfig] = None) -> Dict[str, Dict[str,
             "model": model.model,
             "base_url": provider.base_url if provider else "",
             "env_var": provider.api_key_env if provider else None,
-            "api_key_env": provider.api_key_env if provider else None,  # new key
+            "api_key_env": provider.api_key_env if provider else None,
+            "api_key": provider.api_key if provider else None,  # hardcoded key fallback
             "temperature": model.temperature,
             "max_tokens": model.max_tokens,
             "tools": model.tools,
