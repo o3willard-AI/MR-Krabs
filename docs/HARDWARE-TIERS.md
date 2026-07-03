@@ -250,10 +250,17 @@ wget https://huggingface.co/bartowski/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-
   --n-gpu-layers 99 --ctx-size 65536 --batch-size 2048
 ```
 
-### Option B: Dedicated coder + judge (dual-model)
+### Option B: Dedicated coder + judge (dual-model) ✅ Proven
 
-Keep 27B Q4 for coder (.23, ports 1234) and add a separate 7-9B judge on
-port 1235. Eliminates single-server contention (judge never waits for coder).
+Keep 27B Q4 for coder (.23, ports 1234) and add a separate 7B judge on
+.21 (port 1234). Eliminates single-server contention — judge never waits
+for coder. **This is the proven Tier 3 config** (kiosk challenge: 2 passes,
+91 min, 0.75/0.75 scores, 18 files).
+
+**Performance note:** 65K ctx is slower than 49K for this model (91 min vs
+39 min). The extra context doesn't translate to better output — the model
+generates more overhead tokens. For most tasks, 49K ctx is the sweet spot.
+Bump to 65K only when you need the extra context for very large specs.
 
 ```yaml
 models:
@@ -274,11 +281,11 @@ models:
 providers:
   local-coder:
     type: openai_compatible
-    base_url: "http://localhost:1234/v1"
+    base_url: "http://192.168.101.23:1234/v1"
     api_key: "dummy"
   local-judge:
     type: openai_compatible
-    base_url: "http://localhost:1235/v1"
+    base_url: "http://192.168.101.21:1234/v1"
     api_key: "dummy"
 ```
 
@@ -291,10 +298,14 @@ Worth it if your primary bottleneck is judge acceptance rate, not speed.
 
 | Scenario | Performance |
 |----------|------------|
-| 17 files | 1-2 passes, ~20-40 minutes (35B) or ~15-25 min (dual-model) |
+| 17 files (kiosk challenge) | 2 passes, ~91 min (65K ctx) or ~39 min (49K ctx) |
 | 30+ files | 3-5 passes, re-split cascade handles automatically |
-| Judge timeout risk | Eliminated with dual-model setup |
-| L0 success rate | ~85% (35B) or ~90% (dual-model) |
+| Judge timeout risk | ✅ Eliminated with dual-model setup |
+| L0 success rate | ~85% (dual-model) |
+
+**Context sizing note:** 65K ctx produced 91 min runs vs 49K ctx at 39 min
+for identical tasks. The model generates more overhead tokens at higher
+context — bump only when the spec truly needs it.
 
 ---
 
