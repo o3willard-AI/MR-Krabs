@@ -817,6 +817,27 @@ class LLMOrchestrator:
                     "timed_out": True,
                 }
 
+            # ── Poll stdout with select to avoid blocking forever ──
+            # readline() blocks until a full line arrives. If the model
+            # generates slowly (or produces no newlines for minutes), the
+            # deadline check above never fires. select() with a short
+            # timeout lets us check the deadline even when no data arrives.
+            import select
+            remaining = deadline - time.monotonic()
+            poll_timeout = min(remaining, 5.0)  # check deadline every 5s
+            if poll_timeout <= 0:
+                continue  # will hit deadline check at top of loop
+            try:
+                ready, _, _ = select.select([proc.stdout], [], [], poll_timeout)
+            except (ValueError, OSError):
+                # Pipe closed or invalid fd — process exited
+                break
+            if not ready:
+                # No data — check if process exited
+                if proc.poll() is not None:
+                    break
+                continue
+
             line = proc.stdout.readline()
             if line:
                 # Retain a sample for debug logging (first + last chunks)
