@@ -1706,7 +1706,9 @@ class LLMOrchestrator:
         for r in results:
             if r.get("files"):
                 all_files.update(r["files"])
-            all_outputs.append(r.get("output", ""))
+            output = r.get("output")
+            if output:
+                all_outputs.append(output)
 
         return {
             "task_id": task_id, "success": True,
