@@ -283,10 +283,6 @@ def main():
         context={
             "task_spec": KIOSK_SPEC,
             "spec": KIOSK_SPEC_DICT,
-            # Force smaller passes — the model can only produce 2-3 files
-            # at 49K ctx despite the token budget estimating 11.
-            # Override to 16K ctx → budget calculates ~3-4 files/pass.
-            "n_ctx_override": 16384,
         },
         task_type="code",
         tiers=["l0-coder", "principal"],
