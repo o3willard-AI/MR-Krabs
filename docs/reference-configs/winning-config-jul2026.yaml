@@ -1,0 +1,177 @@
+# MR-Krabs — Proven Winning Config (Jul 3, 2026)
+#
+# This config achieved the FIRST successful end-to-end kiosk challenge run
+# (17 files, 39 min, $0 cloud cost, 0.75/0.70 judge scores).
+#
+# KEY LESSONS FROM 7-RUN DEBUGGING SESSION:
+#
+# 1. PI > OpenCode for multi-file tasks (11 files/pass vs 1-3)
+#    OpenCode enters "analysis mode" on multi-file specs and produces
+#    summaries instead of code. PI streams tool calls directly.
+#
+# 2. Single-model pipeline beats multi-model
+#    Claude-Distilled-35B judge (.21) scored Qwen coder output at 0.00
+#    — disproportionate judge creates impossible bar. Same model judging
+#    its own peer produces calibrated scores (0.75/0.70).
+#
+# 3. Default token budget (49K ctx → 11 files/pass) works best
+#    Forced smaller passes (16K ctx → 4 files/pass) didn't help — the
+#    model truncated regardless. Large passes let PI write everything in
+#    one shot; the re-split cascade handles overflow.
+#
+# 4. Orchestrator must stay on non-reasoning model
+#    .21 has --reasoning ON (needed for judge). Reasoning models produce
+#    95%+ reasoning_content; adapter only reads content → empty output.
+#    Two llama-server instances (different ports) needed to share .21.
+#
+# 5. Resilience fixes were critical
+#    - Popen streaming (no 200MB memory bomb from PI JSONL)
+#    - Overwrite guard (PI writes every file twice — caught and skipped)
+#    - Select polling (no indefinite hangs on slow model output)
+#    - Post-judge counters (retries only advance after verify)
+#    - Disk verification (don't trust written_paths alone)
+#
+# RUN HISTORY:
+#   Run 1: PI + Qwen judge → Pass 1-2 accepted (0.75/0.70), Pass 3 judge timeout
+#   Run 2: OpenCode + Claude judge → 1-2 files/pass, score 0.30, re-split to floor
+#   Run 3: PI + Claude judge → score 0.00 (impossible bar)
+#   Run 4: PI + Qwen + smaller passes → score 0.00 (model still truncated)
+#   Run 5: PI + Qwen + smaller passes → judge timeout (same-server contention)
+#   Run 6: PI + Qwen + default config → ALL 4 PASSES ACCEPTED, merge bug crash
+#   Run 7: Same + merge fix → ✅ SUCCESS (39 min, 2 passes, 20 files)
+
+version: "1.0"
+
+providers:
+  local-23:
+    type: openai_compatible
+    base_url: "http://192.168.101.23:1234/v1"
+    api_key: "dummy"
+    timeout: 1800
+  local-21:
+    type: openai_compatible
+    base_url: "http://192.168.101.21:1234/v1"
+    api_key: "dummy"
+    timeout: 1800
+  local-17:
+    type: openai_compatible
+    base_url: "http://192.168.101.17:1234/v1"
+    api_key: "dummy"
+    timeout: 1800
+  litellm:
+    type: openai_compatible
+    base_url: "http://192.168.101.42:4000/v1"
+    api_key_env: LITELLM_MASTER_KEY
+    timeout: 1800
+  openrouter:
+    type: openai_compatible
+    base_url: "https://openrouter.ai/api/v1"
+    api_key_env: OPENROUTER_API_KEY
+    timeout: 300
+
+models:
+  # ── ALL THREE ROLES ON SAME MODEL (.23 Qwen3.6-27B) ──
+  # Single-model pipeline: coder judges itself = calibrated scores.
+  # .21 Claude-Distilled-35B is idle — that's correct, not a problem.
+
+  judge:
+    provider: local-23
+    model: "qwen3.6-27b-q4_k_m"
+    temperature: 0.1
+    max_tokens: 16384
+    roles: [judge]
+
+  l0-planner:
+    provider: local-23
+    model: "qwen3.6-27b-q4_k_m"
+    temperature: 0.0
+    max_tokens: 16384
+    roles: [planner]
+    tools: [file_read]
+    stop: []
+
+  orchestrator:
+    provider: local-23
+    model: "qwen3.6-27b-q4_k_m"
+    temperature: 0.0
+    max_tokens: 32768
+    roles: [orchestrator]
+
+  l0-coder:
+    provider: local-23
+    model: "qwen3.6-27b-q4_k_m"
+    temperature: 0.0
+    max_tokens: 32768
+    roles: [coder]
+    tools: [file_write, file_read]
+
+  l1-coder:
+    provider: openrouter
+    model: "deepseek/deepseek-v4-flash"
+    temperature: 0.0
+    max_tokens: 131072
+    roles: [coder]
+    tools: [file_write, file_read]
+
+  l2-coder:
+    provider: openrouter
+    model: "xiaomi/mimo-v2.5"
+    temperature: 0.0
+    max_tokens: 131072
+    roles: [coder]
+    tools: [file_write, file_read]
+
+  principal:
+    provider: ""
+    model: ""
+    roles: [principal]
+
+workflows:
+  code:
+    tiers: [l0-coder, l1-coder, l2-coder, principal]
+    max_retries_per_tier: 3
+    judge_model: judge
+  plan:
+    tiers: [l0-planner, principal]
+    max_retries_per_tier: 3
+    judge_model: judge
+
+tier_failure_actions:
+  l0-coder: log_only
+  l1-coder: notify_and_escalate
+  l2-coder: notify_and_wait
+  l0-planner: log_only
+
+budget:
+  daily_limit_usd: 10.00
+  budget_awareness: true
+  tier_thresholds:
+    0.8: l2-coder
+    0.5: l1-coder
+    0.3: l0-coder
+
+# ── PI CODER BACKEND (primary for L0) ──
+# PI writes 11 files/pass vs OpenCode's 1-3 on Qwen3.6-27B.
+# OpenCode is removed from L0 — it enters "analysis mode" on
+# multi-file specs and produces summaries instead of code.
+pi_models:
+  l0-coder: bakeoff23/qwen3.6-27b-q4
+  l1-coder: openrouter/deepseek/deepseek-v4-flash
+  l2-coder: openrouter/xiaomi/mimo-v2.5
+
+pi_timeouts:
+  l0-coder: 2400
+  l1-coder: 1200
+  l2-coder: 1200
+
+# ── OPENCODE (fallback only, not L0) ──
+opencode_models:
+  l1-coder: openrouter/deepseek/deepseek-v4-flash
+  l2-coder: openrouter/xiaomi/mimo-v2.5
+
+opencode_timeouts:
+  l0-coder: 2400
+  l1-coder: 1200
+  l2-coder: 1200
+
+prompt_flow_debug: false
