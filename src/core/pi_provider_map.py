@@ -140,7 +140,12 @@ class PIModelRegistry:
             return False, f"Provider '{provider_name}' has no base_url"
 
         # Try /v1/models endpoint (OpenAI-compatible)
-        url = base_url.rstrip("/") + "/v1/models"
+        # PI registry baseUrl may already include /v1 suffix.
+        # Strip trailing /, add /v1 only if not present, then /models.
+        url = base_url.rstrip("/")
+        if not url.endswith("/v1"):
+            url += "/v1"
+        url += "/models"
         try:
             req = urllib.request.Request(url, method="HEAD")
             urllib.request.urlopen(req, timeout=5)
