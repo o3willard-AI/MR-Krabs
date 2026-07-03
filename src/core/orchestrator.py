@@ -670,8 +670,14 @@ class LLMOrchestrator:
         system_prompt: str = "",
         retry_num: int = 1,
         project_root: str | None = None,
+        accumulated_files: set[str] | None = None,
     ) -> dict[str, Any]:
         """Execute a coder tier through PI subprocess (--mode json).
+
+        Streams JSONL output incrementally — never buffers the full stdout
+        in memory (PI can produce 200MB+ JSONL for large tasks). Writes
+        are guarded against paths already in accumulated_files to prevent
+        cross-pass/cross-retry overwrites.
 
         Args:
             tier: Tier key (l0-coder, l1-coder, l2-coder).
@@ -681,6 +687,8 @@ class LLMOrchestrator:
             project_root: Working directory for PI — file paths in the task
                 spec are relative to this directory. If None, uses the
                 orchestrator's CWD (typically the MR-Krabs repo).
+            accumulated_files: Set of paths already written by previous
+                passes/retries — these will never be overwritten.
 
         Returns:
             Dict matching call_llm_with_retry() shape:
@@ -741,22 +749,24 @@ class LLMOrchestrator:
                   f"sys_prompt={len(system_prompt)}chars, "
                   f"cmd={' '.join(pi_cmd[:4])}...")
 
+        # ── Incremental streaming via Popen ──────────────────────
+        # PI can produce 200MB+ of JSONL for large multi-file tasks.
+        # Using Popen with line-by-line stdout reads keeps memory constant
+        # instead of ballooning to 5GB+ RSS via subprocess.run(capture_output=True).
+        # Resolved paths from accumulated_files are guarded against — if PI
+        # tries to write a file already produced by a previous pass/retry,
+        # the write is silently skipped (no overwrite, no duplicate).
+        accum = accumulated_files or set()
+
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 pi_cmd,
-                input=user_prompt,
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout,
                 cwd=project_root,
             )
-        except subprocess.TimeoutExpired:
-            return {
-                "success": False,
-                "error": f"PI timeout ({timeout}s)",
-                "ready_for_escalation": True,
-                "timed_out": True,
-            }
         except FileNotFoundError:
             return {
                 "success": False,
@@ -770,66 +780,180 @@ class LLMOrchestrator:
                 "ready_for_escalation": True,
             }
 
-        duration = time.monotonic() - start_mono
+        # Write prompt to stdin and close — the prompt is small (3-7 KB)
+        # so this won't block. PI reads stdin to EOF, then starts streaming.
+        try:
+            proc.stdin.write(user_prompt)
+        except (BrokenPipeError, OSError):
+            pass  # PI exited before reading all input
+        try:
+            proc.stdin.close()
+        except Exception:
+            pass
 
-        if proc.returncode != 0:
-            if cleanup_sp:
-                try:
-                    os.unlink(cleanup_sp)
-                except OSError:
-                    pass
-            # R4: Log PI failure for debug
-            self._prompt_flow_logger.log(
-                agent=f"{tier}_retry{retry_num}",
-                input_text=(
-                    f"=== SYSTEM PROMPT ===\n{system_prompt}\n\n"
-                    f"=== USER PROMPT ===\n{user_prompt}\n\n"
-                    f"=== PI COMMAND ===\n{' '.join(pi_cmd)}"
-                ),
-                output_text=(
-                    f"exit_code={proc.returncode}\n"
-                    f"stderr={proc.stderr[:2000] if proc.stderr else '(none)'}\n"
-                    f"stdout={proc.stdout[:2000] if proc.stdout else '(empty)'}"
-                ),
-            )
-            return {
-                "success": False,
-                "error": proc.stderr[:500] if proc.stderr else f"exit {proc.returncode}",
-                "exit_code": proc.returncode,
-                "ready_for_escalation": True,
-                "duration_seconds": duration,
-            }
-
-        # Parse JSONL — extract agent_end + tool calls
+        # ── Stream stdout line-by-line, parse JSONL events ──────
         output_parts = []
         tool_results = []
         written_paths = []
+        stdout_sample = []  # keep first + last ~2KB for debug log (never 200MB)
+        skipped_overwrites = 0
+        deadline = start_mono + timeout
+        sample_cap = 4000  # max chars to retain for debug log
 
-        for line in proc.stdout.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = _json.loads(line)
-            except Exception:
-                continue
+        while True:
+            # Timeout check
+            if time.monotonic() > deadline:
+                proc.kill()
+                proc.wait()
+                if cleanup_sp:
+                    try:
+                        os.unlink(cleanup_sp)
+                    except OSError:
+                        pass
+                return {
+                    "success": False,
+                    "error": f"PI timeout ({timeout}s)",
+                    "ready_for_escalation": True,
+                    "timed_out": True,
+                }
 
-            etype = event.get("type", "")
+            line = proc.stdout.readline()
+            if line:
+                # Retain a sample for debug logging (first + last chunks)
+                if len("".join(stdout_sample)) < sample_cap:
+                    stdout_sample.append(line)
+                else:
+                    # Rolling window: keep 2nd half of sample + new line
+                    half = len(stdout_sample) // 2
+                    stdout_sample = stdout_sample[-half:] + [line]
 
-            # PI wraps tool calls inside message_update → assistantMessageEvent
-            if etype == "message_update":
-                inner = event.get("assistantMessageEvent", {})
-                inner_type = inner.get("type", "")
-                if inner_type in ("toolcall_end", "toolCall"):
-                    tc = inner.get("toolCall", {})
-                    name = tc.get("name", "")
-                    args = tc.get("arguments", {})
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = _json.loads(line)
+                except Exception:
+                    continue
+
+                etype = event.get("type", "")
+
+                # PI wraps tool calls inside message_update → assistantMessageEvent
+                if etype == "message_update":
+                    inner = event.get("assistantMessageEvent", {})
+                    inner_type = inner.get("type", "")
+                    if inner_type in ("toolcall_end", "toolCall"):
+                        tc = inner.get("toolCall", {})
+                        name = tc.get("name", "")
+                        args = tc.get("arguments", {})
+                        if name in ("write", "write_file", "Write"):
+                            path = args.get("file_path") or args.get("path") or args.get("filePath") or ""
+                            content_val = args.get("content", "")
+                            if path and content_val:
+                                try:
+                                    # R2: Block writes to protected files (configs, secrets, .git)
+                                    is_protected, matched = self._is_protected_file(path)
+                                    if is_protected:
+                                        print(f"  ⛔ PROTECTED FILE blocked: {path} "
+                                              f"(matches '{matched}')")
+                                        tool_results.append({
+                                            "tool": name, "args": args,
+                                            "protected_block": True, "pattern": matched,
+                                        })
+                                    else:
+                                        # R3: Sandbox check — confine writes to project_root
+                                        safe_path, sandbox_err = (
+                                            self._resolve_sandboxed_path(path, project_root)
+                                        )
+                                        if sandbox_err:
+                                            print(f"  ⛔ SANDBOX blocked: {sandbox_err}")
+                                            tool_results.append({
+                                                "tool": name, "args": args,
+                                                "sandbox_block": True,
+                                            })
+                                        elif safe_path and (safe_path in accum or path in accum):
+                                            # ── Overwrite guard: this file was already written ──
+                                            skipped_overwrites += 1
+                                            tool_results.append({
+                                                "tool": name, "args": args,
+                                                "skipped_overwrite": True, "path": safe_path or path,
+                                            })
+                                        else:
+                                            self.file_tools.file_write(
+                                                safe_path or path, content_val
+                                            )
+                                            written_paths.append(safe_path or path)
+                                except Exception:
+                                    pass
+                        tool_results.append({"tool": name, "args": args})
+
+                elif etype == "agent_end":
+                    msg = event.get("message", {})
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        content = "\n".join(
+                            c.get("text", "") for c in content if c.get("type") == "text"
+                        )
+                    if content:
+                        output_parts.append(str(content))
+
+                    # Extract tool calls from agent_end messages (PI v3 format).
+                    messages = event.get("messages", [])
+                    for m in messages:
+                        if not isinstance(m, dict):
+                            continue
+                        for item in m.get("content", []):
+                            if not isinstance(item, dict):
+                                continue
+                            if item.get("type") == "toolCall":
+                                name = item.get("name", "")
+                                args = item.get("arguments", {})
+                                if name in ("write", "write_file", "Write"):
+                                    path = args.get("file_path") or args.get("path") or args.get("filePath") or ""
+                                    content_val = args.get("content", "")
+                                    if path and content_val:
+                                        try:
+                                            is_protected, matched = self._is_protected_file(path)
+                                            if is_protected:
+                                                print(f"  ⛔ PROTECTED FILE blocked: {path} "
+                                                      f"(matches '{matched}')")
+                                                tool_results.append({
+                                                    "tool": name, "args": args,
+                                                    "protected_block": True, "pattern": matched,
+                                                })
+                                            else:
+                                                safe_path, sandbox_err = (
+                                                    self._resolve_sandboxed_path(path, project_root)
+                                                )
+                                                if sandbox_err:
+                                                    print(f"  ⛔ SANDBOX blocked: {sandbox_err}")
+                                                    tool_results.append({
+                                                        "tool": name, "args": args,
+                                                        "sandbox_block": True,
+                                                    })
+                                                elif safe_path and (safe_path in accum or path in accum):
+                                                    skipped_overwrites += 1
+                                                    tool_results.append({
+                                                        "tool": name, "args": args,
+                                                        "skipped_overwrite": True, "path": safe_path or path,
+                                                    })
+                                                else:
+                                                    self.file_tools.file_write(
+                                                        safe_path or path, content_val
+                                                    )
+                                                    written_paths.append(safe_path or path)
+                                        except Exception:
+                                            pass
+                                tool_results.append({"tool": name, "args": args})
+
+                # Also handle direct toolCall events (legacy format)
+                elif etype == "toolCall":
+                    name = event.get("name", "")
+                    args = event.get("arguments", {})
                     if name in ("write", "write_file", "Write"):
                         path = args.get("file_path") or args.get("path") or args.get("filePath") or ""
                         content_val = args.get("content", "")
                         if path and content_val:
                             try:
-                                # R2: Block writes to protected files (configs, secrets, .git)
                                 is_protected, matched = self._is_protected_file(path)
                                 if is_protected:
                                     print(f"  ⛔ PROTECTED FILE blocked: {path} "
@@ -839,7 +963,6 @@ class LLMOrchestrator:
                                         "protected_block": True, "pattern": matched,
                                     })
                                 else:
-                                    # R3: Sandbox check — confine writes to project_root
                                     safe_path, sandbox_err = (
                                         self._resolve_sandboxed_path(path, project_root)
                                     )
@@ -848,6 +971,12 @@ class LLMOrchestrator:
                                         tool_results.append({
                                             "tool": name, "args": args,
                                             "sandbox_block": True,
+                                        })
+                                    elif safe_path and (safe_path in accum or path in accum):
+                                        skipped_overwrites += 1
+                                        tool_results.append({
+                                            "tool": name, "args": args,
+                                            "skipped_overwrite": True, "path": safe_path or path,
                                         })
                                     else:
                                         self.file_tools.file_write(
@@ -858,56 +987,70 @@ class LLMOrchestrator:
                                 pass
                     tool_results.append({"tool": name, "args": args})
 
-            elif etype == "agent_end":
-                msg = event.get("message", {})
-                content = msg.get("content", "")
-                if isinstance(content, list):
-                    content = "\n".join(
-                        c.get("text", "") for c in content if c.get("type") == "text"
-                    )
-                if content:
-                    output_parts.append(str(content))
-
-            # Also handle direct toolCall events (legacy format)
-            elif etype == "toolCall":
-                name = event.get("name", "")
-                args = event.get("arguments", {})
-                if name in ("write", "write_file", "Write"):
-                    path = args.get("file_path") or args.get("path") or args.get("filePath") or ""
-                    content_val = args.get("content", "")
-                    if path and content_val:
+            elif proc.poll() is not None:
+                # Process exited — read any trailing lines
+                for trailing in proc.stdout:
+                    if len("".join(stdout_sample)) < sample_cap:
+                        stdout_sample.append(trailing)
+                    trailing = trailing.strip()
+                    if trailing:
                         try:
-                            # R2: Block writes to protected files
-                            is_protected, matched = self._is_protected_file(path)
-                            if is_protected:
-                                print(f"  ⛔ PROTECTED FILE blocked: {path} "
-                                      f"(matches '{matched}')")
-                                tool_results.append({
-                                    "tool": name, "args": args,
-                                    "protected_block": True, "pattern": matched,
-                                })
-                            else:
-                                # R3: Sandbox check
-                                safe_path, sandbox_err = (
-                                    self._resolve_sandboxed_path(path, project_root)
-                                )
-                                if sandbox_err:
-                                    print(f"  ⛔ SANDBOX blocked: {sandbox_err}")
-                                    tool_results.append({
-                                        "tool": name, "args": args,
-                                        "sandbox_block": True,
-                                    })
-                                else:
-                                    self.file_tools.file_write(
-                                        safe_path or path, content_val
+                            event = _json.loads(trailing)
+                            if event.get("type") == "agent_end":
+                                msg = event.get("message", {})
+                                content = msg.get("content", "")
+                                if isinstance(content, list):
+                                    content = "\n".join(
+                                        c.get("text", "") for c in content
+                                        if c.get("type") == "text"
                                     )
-                                    written_paths.append(safe_path or path)
+                                if content:
+                                    output_parts.append(str(content))
                         except Exception:
                             pass
-                tool_results.append({"tool": name, "args": args})
+                break
 
-        # R4: Dump PI input/output to debug dir when prompt flow logging is
-        # enabled (auto-enabled on first rejection, or manually via env var).
+        # Collect stderr (bounded — stderr is typically small)
+        try:
+            stderr_data = proc.stderr.read()
+        except Exception:
+            stderr_data = "(stderr read failed)"
+
+        returncode = proc.returncode
+        duration = time.monotonic() - start_mono
+
+        if skipped_overwrites:
+            print(f"  [PI-GUARD] Skipped {skipped_overwrites} overwrite(s) — files already in accumulated set")
+
+        if returncode != 0:
+            if cleanup_sp:
+                try:
+                    os.unlink(cleanup_sp)
+                except OSError:
+                    pass
+            # R4: Log PI failure for debug (bounded sample, not full 200MB stdout)
+            self._prompt_flow_logger.log(
+                agent=f"{tier}_retry{retry_num}",
+                input_text=(
+                    f"=== SYSTEM PROMPT ===\n{system_prompt}\n\n"
+                    f"=== USER PROMPT ===\n{user_prompt}\n\n"
+                    f"=== PI COMMAND ===\n{' '.join(pi_cmd)}"
+                ),
+                output_text=(
+                    f"exit_code={returncode}\n"
+                    f"stderr={stderr_data[:2000] if stderr_data else '(none)'}\n"
+                    f"stdout_sample={''.join(stdout_sample)[:2000]}"
+                ),
+            )
+            return {
+                "success": False,
+                "error": stderr_data[:500] if stderr_data else f"exit {returncode}",
+                "exit_code": returncode,
+                "ready_for_escalation": True,
+                "duration_seconds": duration,
+            }
+
+        # R4: Dump PI input/output to debug dir (bounded sample)
         self._prompt_flow_logger.log(
             agent=f"{tier}_retry{retry_num}",
             input_text=(
@@ -915,7 +1058,7 @@ class LLMOrchestrator:
                 f"=== USER PROMPT ===\n{user_prompt}\n\n"
                 f"=== PI COMMAND ===\n{' '.join(pi_cmd)}"
             ),
-            output_text=proc.stdout if proc.stdout else "(empty stdout)",
+            output_text="".join(stdout_sample) if stdout_sample else "(empty stdout)",
         )
 
         output = "\n".join(output_parts).strip()
@@ -951,7 +1094,7 @@ class LLMOrchestrator:
                 return {
                     "success": False,
                     "error": "Empty output from PI",
-                    "stderr": proc.stderr[:500] if proc.stderr else "",
+                    "stderr": stderr_data[:500] if stderr_data else "",
                     "written_paths": written_paths,
                     "ready_for_escalation": True,
                     "duration_seconds": duration,
@@ -1120,6 +1263,14 @@ class LLMOrchestrator:
                             pass
 
         output = (proc.stderr or proc.stdout or "").strip()
+        # Diagnostic: are files being discovered?
+        if written_paths:
+            print(f"  [DISCOVER] {len(written_paths)} files: "
+                  f"{', '.join(str(Path(p).name) for p in written_paths[:3])}"
+                  f"{'...' if len(written_paths) > 3 else ''}")
+        else:
+            print(f"  [DISCOVER] 0 files — before={len(before_files)}, "
+                  f"after={len(after_files)}, new={len(after_files - before_files)}")
         # OpenCode writes TUI/text to stderr by default; stdout may be empty.
 
         # R4: Dump OpenCode input/output to debug dir
@@ -1444,10 +1595,17 @@ class LLMOrchestrator:
                              or f.path not in sub_result.get("written_paths", []))
                     ]
                     # Salvage any files that WERE written before truncation
-                    if sub_result.get("files"):
-                        accumulated_files.extend(sub_result["files"].keys())
-                    elif sub_result.get("written_paths"):
-                        accumulated_files.extend(sub_result["written_paths"])
+                    # (verified on disk — don't trust sub_result alone)
+                    salvaged = []
+                    import os as _os
+                    for p in (sub_result.get("written_paths", []) or []):
+                        if _os.path.isfile(p):
+                            accumulated_files.append(p)
+                            salvaged.append(p)
+                        else:
+                            print(f"  ⚠️  Salvage: written_path not on disk: {p}")
+                    if salvaged:
+                        print(f"  Salvaged {len(salvaged)} files before re-split")
 
                     future_refs = [
                         f for p in passes[passes.index(subtask) + 1:]
@@ -1470,6 +1628,19 @@ class LLMOrchestrator:
                             }
                         new_passes = split_into_passes(all_remaining, max_files=new_limit)
                         if new_passes:
+                            # ── Dedup: remove files already written before truncation ──
+                            # Re-splitting can put already-written files into new passes.
+                            # Filter them out so the coder doesn't get told to create files
+                            # that already exist (prevents duplicates across passes).
+                            accum_set = set(accumulated_files)
+                            for ns in new_passes:
+                                ns.files = [f for f in ns.files if f.path not in accum_set]
+                            # Drop empty passes (all files already written)
+                            new_passes = [ns for ns in new_passes if ns.files]
+                            if not new_passes:
+                                print(f"  All remaining files already written — advancing pass_idx")
+                                pass_idx += 1
+                                continue
                             print(f"  Truncated — re-splitting {len(all_remaining)} "
                                   f"remaining files with limit {new_limit}/pass "
                                   f"(was {len(subtask.files)}/pass)")
@@ -1491,11 +1662,22 @@ class LLMOrchestrator:
                     "pass_results": results,
                 }
 
-            # Accumulate files written in this pass
+            # Accumulate files written in this pass — verify on disk before counting
+            import os as _os
+            written = sub_result.get("written_paths", []) or []
+            for p in written:
+                if _os.path.isfile(p):
+                    if p not in accumulated_files:
+                        accumulated_files.append(p)
+                else:
+                    print(f"  ⚠️  Multi-pass: written_path not on disk: {p}")
+            # Also check the files dict if present
             if sub_result.get("files"):
-                accumulated_files.extend(sub_result["files"].keys())
-            elif sub_result.get("written_paths"):
-                accumulated_files.extend(sub_result["written_paths"])
+                for p in sub_result["files"]:
+                    if p not in accumulated_files and _os.path.isfile(p):
+                        accumulated_files.append(p)
+
+            pass_idx += 1
 
         # Merge pass results
         all_files = {}
@@ -1962,6 +2144,7 @@ class LLMOrchestrator:
                 # Route through OpenCode (default), PI (fallback), or raw LLM
                 has_opencode = bool(self.opencode_models.get(tier.lower()))
                 has_pi = bool(self.pi_models.get(tier.lower()))
+                print(f"[TRACE] LOOP: tier={tier} retry={retry_num} has_pi={has_pi} has_opencode={has_opencode} t={time.monotonic():.0f}")
 
                 # ── Fix-mode prompt selection (Gap 4) ────────────────────────
                 # On retry with feedback, use the fix prompt (targeted, minimal changes).
@@ -1988,6 +2171,7 @@ class LLMOrchestrator:
                         system_prompt=current_pi_sp,
                         retry_num=retry_num,
                         project_root=project_root,
+                        accumulated_files=set(accumulated_files.keys()),
                     )
                 else:
                     result = self.call_llm_with_retry(
@@ -1996,6 +2180,62 @@ class LLMOrchestrator:
                         timeout_seconds=timeout_seconds,
                     )
 
+                # ── Increment counters ONLY after coder output is confirmed ──
+                # Previously these fired BEFORE the success check, so a crash
+                # burned a retry slot and pollute retry counters. Now counters
+                # advance only on real attempts (output produced OR recoverable
+                # failure). Unrecoverable failures (PI/OpenCode not installed)
+                # don't consume any counters — they escalate immediately.
+
+                if not result["success"]:
+                    if has_opencode or has_pi:
+                        backend = "OpenCode" if has_opencode else "PI"
+                        error_msg = result.get('error', 'unknown')
+                        is_unrecoverable = error_msg in (
+                            "OpenCode not installed", "PI not installed"
+                        )
+                        if is_unrecoverable:
+                            # Don't count — not a real attempt. Escalate.
+                            break
+                        # Recoverable failure — count as an attempt
+                        attempts_total += 1
+                        retries_per_tier[tier] += 1
+                        retry_num += 1
+                        # ── Pipeline monitor: record coder output ──────────
+                        self.monitor.record_coder_output(
+                            tier=tier,
+                            attempt=retries_per_tier[tier],
+                            output_chars=0,
+                            files_written=0,
+                            truncated=False,
+                            exit_code=result.get("exit_code"),
+                        )
+                        stderr_tail = str(result.get('stderr', ''))[-200:] if result.get('stderr') else ''
+                        print(f"Tier {tier} {backend} hard failure "
+                              f"(attempt {retries_per_tier[tier]}/{max_retries_per_tier}): {error_msg}")
+                        if result.get("exit_code"):
+                            print(f"Tier {tier} {backend} exited {result.get('exit_code', '?')} — {error_msg}")
+                        if stderr_tail:
+                            print(f"Tier {tier} {backend} stderr tail: {stderr_tail}")
+                        if retry_num <= max_retries_per_tier:
+                            feedback = (
+                                f"{backend} PROCESS FAILURE (attempt {retries_per_tier[tier]}): {error_msg}. "
+                                "Your previous attempt produced no output or crashed. "
+                                "Simplify the task — write fewer files at once, "
+                                "reduce individual file sizes, or split into smaller sub-tasks. "
+                                "Try again with a simpler approach."
+                            )
+                            continue
+                        break  # exhausted retries
+                    else:
+                        # Raw LLM HTTP failure
+                        attempts_total += 1
+                        retries_per_tier[tier] += 1
+                        retry_num += 1
+                        print(f"Tier {tier} HTTP failure: {result.get('error', 'unknown')}")
+                        break
+
+                # ── Coder produced output — count as a real attempt ──
                 attempts_total += 1
                 retries_per_tier[tier] += 1
                 retry_num += 1
@@ -2011,38 +2251,11 @@ class LLMOrchestrator:
                         exit_code=result.get("exit_code"),
                     )
 
-                if not result["success"]:
-                    if has_opencode or has_pi:
-                        backend = "OpenCode" if has_opencode else "PI"
-                        error_msg = result.get('error', 'unknown')
-                        stderr_tail = str(result.get('stderr', ''))[-200:] if result.get('stderr') else ''
-                        print(f"Tier {tier} {backend} hard failure (attempt {retry_num}/{max_retries_per_tier}): {error_msg}")
-                        if result.get("exit_code"):
-                            print(f"Tier {tier} {backend} exited {result.get('exit_code', '?')} — {error_msg}")
-                        if stderr_tail:
-                            print(f"Tier {tier} {backend} stderr tail: {stderr_tail}")
-                        # Don't escalate immediately — retry within this tier with coaching
-                        # Only unrecoverable failures ({backend} not installed) skip retry
-                        is_unrecoverable = error_msg in (
-                            "OpenCode not installed", "PI not installed"
-                        )
-                        if retry_num < max_retries_per_tier and not is_unrecoverable:
-                            feedback = (
-                                f"{backend} PROCESS FAILURE (attempt {retry_num}): {error_msg}. "
-                                "Your previous attempt produced no output or crashed. "
-                                "Simplify the task — write fewer files at once, "
-                                "reduce individual file sizes, or split into smaller sub-tasks. "
-                                "Try again with a simpler approach."
-                            )
-                            continue  # retry within same tier
-                        # Exhausted retries or unrecoverable — break to post-loop failure handler
-                        break
-                    else:
-                        print(f"Tier {tier} HTTP failure: {result.get('error', 'unknown')}")
-                        break
+                import time as _time
 
                 # --- Tool execution ---
                 if (has_opencode or has_pi) and "written_paths" in result:
+                    print(f"[TRACE] A: tool_exec start, {len(result.get('written_paths',[]))} files, t={_time.monotonic():.0f}")
                     # OpenCode/PI wrote files — read them back for judge evaluation
                     coder_paths = result.get("written_paths", [])
                     tool_result = {"results": [], "tools_executed": len(coder_paths), "all_succeeded": True}
@@ -2056,8 +2269,6 @@ class LLMOrchestrator:
                                 "content": content.get("content", ""),
                                 "bytes": bytelen,
                             })
-                            # R1: track in accumulated_files for next tier's handoff
-                            accumulated_files[p] = bytelen
                         except Exception:
                             tool_result["results"].append({"tool": "file_write", "path": p, "success": False})
                 else:
@@ -2065,6 +2276,7 @@ class LLMOrchestrator:
 
                 # --- Judge evaluation ---
                 try:
+                    print(f"[TRACE] B: judge start, t={_time.monotonic():.0f}")
                     task_text = context.get("task_spec", task_id)
                     # For plan tasks, prepend a planning indicator so detect_task_type
                     # correctly routes to PLAN_CRITERIA instead of CODE_CRITERIA
@@ -2089,6 +2301,7 @@ class LLMOrchestrator:
                     if task_spec_dict:
                         eval_kwargs["spec"] = task_spec_dict
                     verdict = judge.evaluate(**eval_kwargs)
+                    print(f"[TRACE] C: judge done, accepted={verdict.accepted}, score={verdict.score:.2f}, t={_time.monotonic():.0f}")
                 except Exception as e:
                     # Judge unavailable — degrade gracefully, treat as rejection
                     verdict = Verdict(
@@ -2133,6 +2346,7 @@ class LLMOrchestrator:
                     pass  # cost tracking failure should never block execution
 
                 # ── Checkpoint after every tier verdict ──────────────────────────
+                print(f"[TRACE] D: checkpoint write, t={_time.monotonic():.0f}")
                 self._write_checkpoint(
                     task_id=task_id,
                     escalation_path=escalation_path + [tier],
@@ -2151,7 +2365,20 @@ class LLMOrchestrator:
                     for tr in tool_result.get("results", []):
                         if tr.get("success") and "content" in tr:
                             files[tr["path"]] = tr["content"]
-                    
+
+                    # ── Accumulate files only after judge confirms (R1+) ──
+                    # Previously these were added before the judge, meaning
+                    # rejected files polluted the accumulated set and blocked
+                    # retries from overwriting them. Now only judge-verified
+                    # files enter the set. Also verify files are actually on disk.
+                    import os as _os
+                    for p in result.get("written_paths", []):
+                        if _os.path.isfile(p):
+                            fsize = _os.path.getsize(p)
+                            accumulated_files[p] = fsize
+                        else:
+                            print(f"  ⚠️  File in written_paths not on disk: {p}")
+
                     best_output = {
                         "tier": tier, "score": verdict.score,
                         "output": result["output"], "files": files,
