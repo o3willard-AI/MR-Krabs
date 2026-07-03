@@ -183,6 +183,7 @@ result = orch.execute_with_judge(
 | Document | Purpose |
 |----------|---------|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Full pipeline design, component map |
+| [HARDWARE-TIERS.md](docs/HARDWARE-TIERS.md) | Three-tier hardware guide (12/24/36 GB VRAM) |
 | [MODEL_CONFIG.md](docs/MODEL_CONFIG.md) | Config reference with example deployments |
 | [JUDGE.md](docs/JUDGE.md) | Judge best practices, coaching reply spec |
 | [COOKBOOK.md](docs/COOKBOOK.md) | Integration recipes, env vars |
