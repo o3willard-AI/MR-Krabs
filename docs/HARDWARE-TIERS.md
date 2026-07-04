@@ -215,10 +215,21 @@ for the full config. Key points:
 | 17 files (kiosk challenge) | 2 passes, ~39 minutes, 0.75/0.70 scores |
 | Judge evaluation | ~10-60 seconds per verdict |
 
-**Performance note:** At 49K context, Qwen3.6-27B massively over-generates.
-An 11-file pass produces ~44K tokens (at 20 tok/s = 37 min). For faster
-iteration on smaller tasks, reduce `--ctx-size` to 16384 — this bounds
-generation to ~3-4 min/pass at the cost of smaller pass sizes.
+### Context scaling (Qwen3.6-27B Q4_K_M, kiosk challenge)
+
+The model over-generates to fill available context. More context = more tokens =
+slower passes, NOT better output.
+
+| Context | Passes | Duration | Score | Notes |
+|---------|--------|----------|-------|-------|
+| 24K | 11 | 130+ min | 0.75-0.80 | Too fragmented, too much overhead |
+| 35K | 4 | ~90 min | 0.75 | Works but slower than 49K |
+| **49K** | **2** | **39 min** | **0.75/0.70** | ✅ **Sweet spot** |
+| 65K | 3 | 91 min | 0.75/0.75 | 2.3× slower, zero quality gain |
+
+**Recommendation:** Start at 49K. If passes consistently truncate with useful
+files remaining, bump to 65K. If passes are taking >15 min without truncation,
+the model is over-generating — reduce context.
 
 ### Upgrade path
 
