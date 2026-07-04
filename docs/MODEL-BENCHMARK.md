@@ -71,3 +71,41 @@ quantization is worth testing for improved output quality.
 - Pass 1: 1 attempt, 2301s, 0.75
 - Pass 2: 1 attempt, 1642s, 0.75
 - Total: 2 attempts, 3943s (66 min)
+
+
+---
+
+## Small-Model Benchmark (Jul 2026)
+
+Same conditions: 49K ctx, PI coder, 7B judge on .21.
+
+| Model | Size | Result | Time | Score |
+|-------|------|--------|------|-------|
+| **Ornith-1.0-9B** | 5.3 GB | ✅ Pass | **62 min** | 0.75/0.75 |
+| Qwen3.5-4B-SuperCoder | 2.5 GB | ✅ Pass | 81 min | 0.75/0.75 |
+| Gemma-4-12B-Coder | 6.9 GB | ❌ PI incompatible | — | — |
+| Qwen2.5-Coder-7B | 4.4 GB | ❌ PI incompatible | — | — |
+
+### Ornith-1.0-9B
+- Pass 1: 1 attempt, 1945s (32 min), 0.75
+- Pass 2: 1 attempt, 1772s (30 min), 0.75
+- Total: 2 attempts, 3717s (62 min)
+- Best small-model option tested. 5.3 GB fits any GPU.
+
+### Qwen3.5-4B-SuperCoder
+- Pass 1: 1 attempt, 1038s (17 min), 0.75
+- Pass 2: 2 attempts, 3805s (63 min), 0.75 (needed retry)
+- Total: 3 attempts, 4843s (81 min)
+- Smallest model tested (2.5 GB). Works but Pass 2 is unreliable.
+
+### Gemma-4-12B-Coder and Qwen2.5-Coder-7B
+Both failed with "Empty output from PI" on all 3 retries. Models respond
+to direct completions API but PI cannot drive them. Likely prompt template
+or tool-call format incompatibility.
+
+## Recommendation
+
+For single-GPU (12 GB) users, **Ornith-1.0-9B** is the best tested option.
+It completes the kiosk challenge in 62 min with 0.75 judge scores. For
+users with 24+ GB VRAM, **Qwen3-Coder-30B MoE** remains the top pick at
+20 min — 3× faster than the best small model.
