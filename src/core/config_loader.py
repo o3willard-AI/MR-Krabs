@@ -134,6 +134,22 @@ class VerifyConfig:
 
 
 @dataclass
+class QAConfig:
+    """Behavioral QA — Loop 3 of Steinberger's Four Loops.
+
+    Starts the completed project, runs behavioral tests against the live
+    system, classifies failures, and routes fixes to the appropriate tier.
+    """
+
+    enabled: bool = False
+    judge_model: str = "judge"  # model for test generation + gap classification
+    coder_tier: str = "l0-coder"  # tier for implementation bug fixes
+    orchestrator_tier: str = "l0-planner"  # tier for missing features / re-planning
+    timeout: int = 300
+    base_url: str = "http://127.0.0.1:5000"  # for HTTP service tests
+
+
+@dataclass
 class MrKrabsConfig:
     """Root configuration — single source of truth for all model definitions."""
 
@@ -144,6 +160,7 @@ class MrKrabsConfig:
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     profiles: Dict[str, ProfileConfig] = field(default_factory=dict)
     verify: VerifyConfig = field(default_factory=VerifyConfig)
+    qa: QAConfig = field(default_factory=QAConfig)
     pi_models: Dict[str, str] = field(default_factory=dict)
     pi_timeouts: Dict[str, int] = field(default_factory=dict)
     opencode_models: Dict[str, str] = field(default_factory=dict)
@@ -315,6 +332,20 @@ def _parse_verify(raw: dict) -> VerifyConfig:
     )
 
 
+def _parse_qa(raw: dict) -> QAConfig:
+    """Parse qa section from raw YAML dict."""
+    if not raw:
+        return QAConfig()
+    return QAConfig(
+        enabled=bool(raw.get("enabled", False)),
+        judge_model=raw.get("judge_model", "judge"),
+        coder_tier=raw.get("coder_tier", "l0-coder"),
+        orchestrator_tier=raw.get("orchestrator_tier", "l0-planner"),
+        timeout=int(raw.get("timeout", 300)),
+        base_url=raw.get("base_url", "http://127.0.0.1:5000"),
+    )
+
+
 # ── Module-level cache ──────────────────────────────────────────────────────
 
 _config_cache: Optional[MrKrabsConfig] = None
@@ -372,6 +403,7 @@ def load_config(path: Optional[str] = None) -> MrKrabsConfig:
     budget = _parse_budget(raw.get("budget", {}))
     profiles = _parse_profiles(raw.get("profiles", {}))
     verify = _parse_verify(raw.get("verify", {}))
+    qa = _parse_qa(raw.get("qa", {}))
     tier_failure_actions = raw.get("tier_failure_actions", {})
     pi_models = raw.get("pi_models", {})
     pi_timeouts = raw.get("pi_timeouts", {})
@@ -404,6 +436,7 @@ def load_config(path: Optional[str] = None) -> MrKrabsConfig:
         budget=budget,
         profiles=profiles,
         verify=verify,
+        qa=qa,
         pi_models=pi_models,
         pi_timeouts=pi_timeouts,
         opencode_models=opencode_models,

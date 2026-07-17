@@ -327,6 +327,11 @@ class LLMOrchestrator:
             self.verify_enabled = (
                 self.verify_config.enabled if self.verify_config else False
             )
+            # Behavioral QA (Loop 3: fix)
+            self.qa_config = getattr(cfg, "qa", None)
+            self.qa_enabled = (
+                self.qa_config.enabled if self.qa_config else False
+            )
             # R2: Protected file patterns — PI must never write to these.
             raw_prot = getattr(cfg, "protected_files", None)
             self.protected_file_patterns = list(raw_prot) if raw_prot else [
@@ -341,6 +346,8 @@ class LLMOrchestrator:
             self.workflows = {}
             self.verify_config = None
             self.verify_enabled = False
+            self.qa_config = None
+            self.qa_enabled = False
             self.protected_file_patterns = []
 
         # Prompt flow debug logger (no-op when disabled)
@@ -2467,6 +2474,90 @@ class LLMOrchestrator:
                             }
                         print(f"[VERIFY] Runtime verification PASSED "
                               f"({verify_result.command})")
+
+                    # ── Behavioral QA (Loop 3: fix) ───────────────────────────
+                    # After verify passes (or if verify is disabled), run
+                    # behavioral tests against the live system. This catches
+                    # gaps between the spec and what was actually built:
+                    # wrong behavior, missing features, architectural problems.
+                    #
+                    # Failures are classified and routed:
+                    #   implementation_bugs → coder tier
+                    #   missing_features   → orchestrator (re-plan)
+                    #   architectural      → principal
+                    if self.qa_enabled:
+                        print(f"[QA] Running behavioral QA evaluation...")
+                        from src.core.qa_loop import QALoop
+                        qa_loop = QALoop(
+                            project_root=project_root or self.project_root,
+                            judge_model=(
+                                self.qa_config.judge_model
+                                if self.qa_config else "judge"
+                            ),
+                            coder_tier=(
+                                self.qa_config.coder_tier
+                                if self.qa_config else "l0-coder"
+                            ),
+                            orchestrator_tier=(
+                                self.qa_config.orchestrator_tier
+                                if self.qa_config else "l0-planner"
+                            ),
+                            timeout=(
+                                self.qa_config.timeout
+                                if self.qa_config else 300
+                            ),
+                        )
+                        task_spec_str = str(context.get("task_spec", task_id))
+                        qa_result = qa_loop.evaluate(
+                            task_spec=task_spec_str,
+                            files=files,
+                            base_url=(
+                                self.qa_config.base_url
+                                if self.qa_config else "http://127.0.0.1:5000"
+                            ),
+                        )
+                        if not qa_result.passed:
+                            print(f"[QA] Behavioral QA FAILED — "
+                                  f"{qa_result.gap_report.summary() if qa_result.gap_report else 'unknown'}")
+                            duration_seconds = time.monotonic() - start_mono
+                            gap_report = qa_result.gap_report
+                            return {
+                                "task_id": task_id,
+                                "success": False,
+                                "output": result["output"],
+                                "score": verdict.score,
+                                "files": files,
+                                "tier_used": tier,
+                                "attempts_total": attempts_total,
+                                "retries_per_tier": retries_per_tier,
+                                "verdict": verdict,
+                                "cost_summary": self.cost_tracker.get_summary(),
+                                "escalation_path": escalation_path + [tier],
+                                "duration_seconds": duration_seconds,
+                                "tool_results": tool_result,
+                                "qa_failed": True,
+                                "qa_result": {
+                                    "total_tests": gap_report.total_tests if gap_report else 0,
+                                    "passed": gap_report.passed if gap_report else 0,
+                                    "failed": gap_report.failed if gap_report else 0,
+                                    "gaps": [
+                                        {
+                                            "test_name": g.test_name,
+                                            "gap_type": g.gap_type,
+                                            "target_tier": g.target_tier,
+                                            "fix_instruction": g.fix_instruction,
+                                            "criticality": g.criticality,
+                                        }
+                                        for g in (gap_report.gaps if gap_report else [])
+                                    ],
+                                    "feedback_by_tier": {
+                                        tier_name: gap_report.feedback_for_tier(tier_name)
+                                        for tier_name in (gap_report.by_tier if gap_report else {})
+                                    },
+                                },
+                            }
+                        print(f"[QA] Behavioral QA PASSED "
+                              f"({qa_result.gap_report.passed}/{qa_result.gap_report.total_tests} tests)")
 
                     duration_seconds = time.monotonic() - start_mono
                     self._clear_checkpoint(task_id)
