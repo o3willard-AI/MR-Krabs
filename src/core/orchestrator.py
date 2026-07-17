@@ -322,6 +322,11 @@ class LLMOrchestrator:
             self.pi_timeouts = {k.lower(): v for k, v in raw_pt.items()}
             raw_wf = getattr(cfg, "workflows", None) or {}
             self.workflows = {k.lower(): v for k, v in raw_wf.items()}
+            # Runtime verification (Loop 2: verify)
+            self.verify_config = getattr(cfg, "verify", None)
+            self.verify_enabled = (
+                self.verify_config.enabled if self.verify_config else False
+            )
             # R2: Protected file patterns — PI must never write to these.
             raw_prot = getattr(cfg, "protected_files", None)
             self.protected_file_patterns = list(raw_prot) if raw_prot else [
@@ -334,6 +339,8 @@ class LLMOrchestrator:
             self.pi_models = {}
             self.pi_timeouts = {}
             self.workflows = {}
+            self.verify_config = None
+            self.verify_enabled = False
             self.protected_file_patterns = []
 
         # Prompt flow debug logger (no-op when disabled)
@@ -2406,6 +2413,60 @@ class LLMOrchestrator:
                         "tier": tier, "score": verdict.score,
                         "output": result["output"], "files": files,
                     }
+
+                    # ── Runtime Verification (Loop 2: verify) ──────────────────
+                    # After the Judge accepts, actually RUN the code to catch
+                    # runtime errors (ImportError, SyntaxError, logic bugs, etc.)
+                    # before declaring success. This is Steinberger Loop 2 of 4:
+                    #   build → verify → fix → scale
+                    if self.verify_enabled:
+                        print(f"[VERIFY] Judge accepted — "
+                              f"running runtime verification...")
+                        from src.core.verifier import RuntimeVerifier
+                        verifier = RuntimeVerifier(
+                            project_root=project_root or self.project_root,
+                            command=(
+                                self.verify_config.command
+                                if self.verify_config else None
+                            ),
+                            timeout=(
+                                self.verify_config.timeout
+                                if self.verify_config else 300
+                            ),
+                            max_retries=(
+                                self.verify_config.max_retries
+                                if self.verify_config else 3
+                            ),
+                        )
+                        verify_result = verifier.verify(files)
+                        if not verify_result.passed:
+                            print(f"[VERIFY] Runtime verification FAILED "
+                                  f"(exit {verify_result.exit_code})")
+                            duration_seconds = time.monotonic() - start_mono
+                            return {
+                                "task_id": task_id,
+                                "success": False,
+                                "output": result["output"],
+                                "score": verdict.score,
+                                "files": files,
+                                "tier_used": tier,
+                                "attempts_total": attempts_total,
+                                "retries_per_tier": retries_per_tier,
+                                "verdict": verdict,
+                                "cost_summary": self.cost_tracker.get_summary(),
+                                "escalation_path": escalation_path + [tier],
+                                "duration_seconds": duration_seconds,
+                                "tool_results": tool_result,
+                                "verify_failed": True,
+                                "verify_result": {
+                                    "exit_code": verify_result.exit_code,
+                                    "command": verify_result.command,
+                                    "errors": verify_result.errors,
+                                    "error_summary": verify_result.error_summary,
+                                },
+                            }
+                        print(f"[VERIFY] Runtime verification PASSED "
+                              f"({verify_result.command})")
 
                     duration_seconds = time.monotonic() - start_mono
                     self._clear_checkpoint(task_id)

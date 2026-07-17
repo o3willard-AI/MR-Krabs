@@ -119,6 +119,21 @@ class ProfileConfig:
 
 
 @dataclass
+class VerifyConfig:
+    """Runtime verification — Loop 2 of Steinberger's Four Loops.
+
+    Runs after Judge acceptance to actually execute the produced code
+    and catch runtime errors before declaring success.
+    """
+
+    enabled: bool = False
+    command: Optional[str] = None  # explicit command; auto-detect if None
+    max_retries: int = 3
+    timeout: int = 300
+    coder_tier: str = "l0-coder"  # which tier handles runtime fixes (Phase 2)
+
+
+@dataclass
 class MrKrabsConfig:
     """Root configuration — single source of truth for all model definitions."""
 
@@ -128,6 +143,7 @@ class MrKrabsConfig:
     tier_failure_actions: Dict[str, str] = field(default_factory=dict)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     profiles: Dict[str, ProfileConfig] = field(default_factory=dict)
+    verify: VerifyConfig = field(default_factory=VerifyConfig)
     pi_models: Dict[str, str] = field(default_factory=dict)
     pi_timeouts: Dict[str, int] = field(default_factory=dict)
     opencode_models: Dict[str, str] = field(default_factory=dict)
@@ -286,6 +302,19 @@ def _parse_profiles(raw: dict) -> Dict[str, ProfileConfig]:
     return profiles
 
 
+def _parse_verify(raw: dict) -> VerifyConfig:
+    """Parse verify section from raw YAML dict."""
+    if not raw:
+        return VerifyConfig()
+    return VerifyConfig(
+        enabled=bool(raw.get("enabled", False)),
+        command=raw.get("command"),
+        max_retries=int(raw.get("max_retries", 3)),
+        timeout=int(raw.get("timeout", 300)),
+        coder_tier=raw.get("coder_tier", "l0-coder"),
+    )
+
+
 # ── Module-level cache ──────────────────────────────────────────────────────
 
 _config_cache: Optional[MrKrabsConfig] = None
@@ -342,6 +371,7 @@ def load_config(path: Optional[str] = None) -> MrKrabsConfig:
     workflows = _parse_workflows(raw.get("workflows", {}))
     budget = _parse_budget(raw.get("budget", {}))
     profiles = _parse_profiles(raw.get("profiles", {}))
+    verify = _parse_verify(raw.get("verify", {}))
     tier_failure_actions = raw.get("tier_failure_actions", {})
     pi_models = raw.get("pi_models", {})
     pi_timeouts = raw.get("pi_timeouts", {})
@@ -373,6 +403,7 @@ def load_config(path: Optional[str] = None) -> MrKrabsConfig:
         tier_failure_actions=tier_failure_actions,
         budget=budget,
         profiles=profiles,
+        verify=verify,
         pi_models=pi_models,
         pi_timeouts=pi_timeouts,
         opencode_models=opencode_models,
