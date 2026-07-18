@@ -365,8 +365,34 @@ def reset_tracker() -> None:
     _default_tracker = None
 
 
+def ask_with_outer_loop(
+    task_spec: str,
+    project_name: str = "unnamed",
+    work_dir: Optional[str] = None,
+) -> "OuterLoopResult":
+    """Execute a task through the outer loop — decomposition + MR-Krabs + verification.
+
+    Use this for tasks of arbitrary size. The outer loop analyzes the spec,
+    decomposes it into kiosk-sized chunks if needed, feeds each through the
+    existing MR-Krabs pipeline, verifies integration seams, and learns from
+    any failures.
+
+    Args:
+        task_spec: The full task specification (can be much larger than kiosk challenge)
+        project_name: Human-readable project name for logging/tracking
+        work_dir: Working directory for chunk outputs (uses temp dir if None)
+
+    Returns:
+        OuterLoopResult with full execution details, decomposition plan,
+        integration results, and learning events.
+    """
+    from src.outer_loop import execute_with_outer_loop as _execute, OuterLoopResult
+    return _execute(task_spec, project_name, work_dir)
+
+
 __all__ = [
     "ask",
+    "ask_with_outer_loop",
     "AskResult",
     "get_budget_remaining",
     "get_cost_summary",

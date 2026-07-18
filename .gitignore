@@ -63,3 +63,4 @@ coverage.xml
 cost_report_*.csv
 cost_report_*.json
 .coverage
+data/
