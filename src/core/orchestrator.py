@@ -2524,6 +2524,16 @@ class LLMOrchestrator:
                                 print(f"[VERIFY] Routing to {fix_tier} for "
                                       f"runtime fixes "
                                       f"(attempt {retry_num}/{verify_max})")
+                                # Clear accumulated_files for failing paths
+                                # so the coder can rewrite them on retry
+                                for p in list(accumulated_files.keys()):
+                                    if any(
+                                        p.endswith(os.path.basename(fp))
+                                        for fp in files
+                                    ):
+                                        del accumulated_files[p]
+                                        print(f"  [VERIFY] Cleared {p} from "
+                                              f"accumulated set for retry")
                                 # Inject failure output into task spec
                                 error_text = "\n".join(
                                     verify_result.errors[-20:]
