@@ -196,11 +196,42 @@ class QALoop:
               f"passed ({suite_result.duration_seconds:.1f}s)")
 
         if suite_result.all_passed:
-            return QAResult(
-                passed=True,
-                suite_result=suite_result,
-                duration_seconds=time.monotonic() - start,
-            )
+            # Check spec coverage even if all generated tests pass.
+            # A project can pass 2 trivial tests while missing 6 of 8
+            # spec requirements — that's a skeleton, not a working project.
+            coverage = self._compute_spec_coverage(task_spec, suite_result)
+            if coverage < 0.50:  # Below 50% spec coverage is a failure
+                print(f"[QA] All tests passed but spec coverage is only "
+                      f"{coverage:.0%} — flagging as incomplete")
+                gap_report = GapReport(
+                    total_tests=suite_result.passed + suite_result.failed + suite_result.errors,
+                    passed=suite_result.passed,
+                    duration_seconds=suite_result.duration_seconds,
+                    gaps=[ClassifiedGap(
+                        test_name="spec_coverage",
+                        description=f"Only {coverage:.0%} of spec requirements verified",
+                        failure_detail=(
+                            f"The project passed all behavioral tests but only "
+                            f"covers {coverage:.0%} of the requirements in the "
+                            f"specification. Missing requirements need to be "
+                            f"implemented."
+                        ),
+                        gap_type="missing_feature",
+                        target_tier=self.orchestrator_tier,
+                        fix_instruction=(
+                            f"Re-plan the project to include ALL spec "
+                            f"requirements. Current coverage: {coverage:.0%}. "
+                            f"Expected: ≥70%."
+                        ),
+                        criticality="critical",
+                    )],
+                )
+            else:
+                return QAResult(
+                    passed=True,
+                    suite_result=suite_result,
+                    duration_seconds=time.monotonic() - start,
+                )
 
         # 3. Classify failures into gaps
         gap_report = self._classify_gaps(
@@ -218,6 +249,37 @@ class QALoop:
             gap_report=gap_report,
             duration_seconds=time.monotonic() - start,
         )
+
+    # ── Spec Coverage ────────────────────────────────────────────
+
+    def _compute_spec_coverage(self, task_spec: str, suite_result: TestSuiteResult) -> float:
+        """Estimate what fraction of spec requirements have passing tests.
+
+        Extracts requirement-like phrases from the spec (MUST, should,
+        implement, create, build, support) and checks how many match
+        passing behavioral test names/descriptions.
+
+        Returns a float 0.0–1.0. Below 0.50 the project is a skeleton.
+        """
+        requirements = _extract_requirement_phrases(task_spec)
+        if not requirements:
+            return 1.0  # No requirements found — can't measure coverage
+
+        passed_names = {t.name.lower() for t in suite_result.passed_tests}
+        passed_descs = " ".join(
+            t.description.lower() for t in suite_result.passed_tests
+        )
+
+        matched = 0
+        for req in requirements:
+            req_lower = req.lower()
+            # Check if any passing test name or description references this requirement
+            if any(req_lower in name for name in passed_names):
+                matched += 1
+            elif req_lower in passed_descs:
+                matched += 1
+
+        return matched / len(requirements)
 
     # ── Test Generation ────────────────────────────────────────────
 
@@ -456,6 +518,32 @@ class QALoop:
             return "javascript/typescript project"
 
         return "unknown"
+
+
+def _extract_requirement_phrases(spec: str) -> list[str]:
+    """Extract requirement-like phrases from a task specification.
+
+    Looks for sentences containing action verbs that indicate a
+    requirement: must, should, implement, create, build, support,
+    handle, verify, test.
+
+    Returns a deduplicated list of requirement phrases.
+    """
+    requirement_patterns = [
+        r'(?:must|should|shall|needs?\s+to)\s+(\w[\w\s]{10,80}?)[.!]',
+        r'(?:implement|create|build|develop|write)\s+(?:a\s+)?(\w[\w\s]{10,80}?)[.!]',
+        r'(?:support|handle|process|verify|test)\s+(\w[\w\s]{10,80}?)[.!]',
+        r'(?:the\s+\w+\s+(?:must|should))\s+(\w[\w\s]{10,80}?)[.!]',
+    ]
+
+    phrases = set()
+    for pattern in requirement_patterns:
+        for match in re.finditer(pattern, spec, re.IGNORECASE):
+            phrase = match.group(1).strip().lower()
+            if len(phrase) > 10:  # Filter noise
+                phrases.add(phrase)
+
+    return list(phrases)
 
     # ── Gap Classification ─────────────────────────────────────────
 
