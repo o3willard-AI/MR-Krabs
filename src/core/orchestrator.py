@@ -772,6 +772,28 @@ class LLMOrchestrator:
         # the write is silently skipped (no overwrite, no duplicate).
         accum = accumulated_files or set()
 
+        # ── Connection throttling (prevents .23 crashes) ──────────
+        # Local llama.cpp servers crash under too many concurrent
+        # inference requests. Acquire a connection slot before spawning
+        # PI — if the server is at capacity, block until a slot opens.
+        conn_host = None
+        try:
+            from src.core.rate_limiter import get_connection_limiter
+            conn_limiter = get_connection_limiter()
+            # Resolve the model's server host from the PI registry
+            if prov_info and prov_info.get("base_url"):
+                from urllib.parse import urlparse
+                parsed = urlparse(prov_info["base_url"])
+                conn_host = parsed.hostname
+                if conn_host:
+                    # Try up to 120s for a connection slot
+                    if not conn_limiter.acquire(conn_host, timeout=120.0):
+                        print(f"  [PI-THROTTLE] {tier}: timed out waiting for "
+                              f"connection slot on {conn_host} — server "
+                              f"may be overloaded")
+        except Exception:
+            pass  # Don't block PI if throttling fails
+
         try:
             proc = subprocess.Popen(
                 pi_cmd,
@@ -782,12 +804,18 @@ class LLMOrchestrator:
                 cwd=project_root,
             )
         except FileNotFoundError:
+            if conn_host:
+                try: conn_limiter.release(conn_host)
+                except Exception: pass
             return {
                 "success": False,
                 "error": "PI not installed",
                 "ready_for_escalation": True,
             }
         except Exception as e:
+            if conn_host:
+                try: conn_limiter.release(conn_host)
+                except Exception: pass
             return {
                 "success": False,
                 "error": str(e),
@@ -1063,6 +1091,10 @@ class LLMOrchestrator:
                     os.unlink(cleanup_sp)
                 except OSError:
                     pass
+            # Release connection throttle
+            if conn_host:
+                try: conn_limiter.release(conn_host)
+                except Exception: pass
             # R4: Log PI failure for debug (bounded sample, not full 200MB stdout)
             self._prompt_flow_logger.log(
                 agent=f"{tier}_retry{retry_num}",
@@ -1111,13 +1143,17 @@ class LLMOrchestrator:
                         os.unlink(cleanup_sp)
                     except OSError:
                         pass
+                # Release connection throttle
+                if conn_host:
+                    try: conn_limiter.release(conn_host)
+                    except Exception: pass
                 return {
                     "success": True,
                     "output": output,
                     "attempt": retry_num,
                     "duration_seconds": duration,
                     "written_paths": written_paths,
-                    "partial": True,  # Flag for caller: more files may remain
+                    "partial": True,
                     "ready_for_escalation": False,
                 }
             else:
@@ -1126,6 +1162,10 @@ class LLMOrchestrator:
                         os.unlink(cleanup_sp)
                     except OSError:
                         pass
+                # Release connection throttle
+                if conn_host:
+                    try: conn_limiter.release(conn_host)
+                    except Exception: pass
                 return {
                     "success": False,
                     "error": "Empty output from PI",
@@ -1139,6 +1179,12 @@ class LLMOrchestrator:
             try:
                 os.unlink(cleanup_sp)
             except OSError:
+                pass
+        # Release connection throttle
+        if conn_host:
+            try:
+                conn_limiter.release(conn_host)
+            except Exception:
                 pass
         return {
             "success": True,

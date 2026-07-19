@@ -1,0 +1,26 @@
+{
+  "task_id": "c3-chaos-v4",
+  "timestamp": "2026-07-19T09:25:32.343799+00:00",
+  "escalation_path": [
+    "l0-coder"
+  ],
+  "accumulated_files": {},
+  "retries_per_tier": {
+    "l0-coder": 3
+  },
+  "best_output": {},
+  "cost_summary": {
+    "daily_total": "0.0",
+    "reserved_total": "0.0",
+    "effective_total": "0.0",
+    "budget_limit": "10.0",
+    "budget_remaining": "10.0",
+    "budget_used_percent": "0.0",
+    "task_totals": {},
+    "tier_totals": {},
+    "total_requests": "0",
+    "active_reservations": "0"
+  },
+  "attempts_total": 3,
+  "elapsed_seconds": -1782998660.081799
+}

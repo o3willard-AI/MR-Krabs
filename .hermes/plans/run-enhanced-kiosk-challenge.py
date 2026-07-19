@@ -25,7 +25,7 @@ from pathlib import Path
 
 # ── Config ──────────────────────────────────────────────────────────
 # Ensure we can import from the MR-Krabs repo
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # .hermes/plans/ → .hermes/ → repo_root
 sys.path.insert(0, str(_REPO_ROOT))
 os.chdir(str(_REPO_ROOT))
 

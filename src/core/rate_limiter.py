@@ -98,3 +98,97 @@ class RateLimiter:
         """Wait for a request slot. Returns False on timeout."""
         bucket = self.get_bucket(provider)
         return bucket.wait_for_token(timeout=timeout)
+
+
+class ConnectionLimiter:
+    """Limits concurrent connections to backend servers.
+
+    Unlike TokenBucket (which limits request rate), this limits the number
+    of in-flight HTTP connections. Local llama.cpp servers crash when too
+    many concurrent inference requests exhaust VRAM or thread pools.
+
+    Uses a semaphore — callers acquire before connecting and release after.
+    """
+
+    # Conservative defaults for local llama.cpp servers.
+    # 2 concurrent connections is safe for most 2-GPU setups.
+    DEFAULT_LIMITS: dict[str, int] = {
+        "localhost": 1,
+        "192.168.101.23": 2,   # 2× RTX 3060 12GB = 24GB, Qwen3-Coder-30B
+        "192.168.101.21": 1,   # 1× RTX 3060 12GB, Qwen2.5-Coder-7B
+        "192.168.101.17": 1,
+    }
+
+    def __init__(self, limits: dict[str, int] | None = None):
+        self._semaphores: dict[str, threading.BoundedSemaphore] = {}
+        self._lock = threading.Lock()
+        self._limits = limits or dict(self.DEFAULT_LIMITS)
+        self._active: dict[str, int] = {}  # For monitoring
+
+    def _get_semaphore(self, host: str) -> threading.BoundedSemaphore:
+        """Get or create a semaphore for a host."""
+        if host not in self._semaphores:
+            with self._lock:
+                if host not in self._semaphores:
+                    limit = self._limits.get(host, 1)
+                    self._semaphores[host] = threading.BoundedSemaphore(limit)
+                    self._active[host] = 0
+        return self._semaphores[host]
+
+    def acquire(self, host: str, timeout: float = 120.0) -> bool:
+        """Try to acquire a connection slot. Blocks until available or timeout.
+
+        Returns True if slot acquired, False on timeout.
+        """
+        sem = self._get_semaphore(host)
+        acquired = sem.acquire(timeout=timeout)
+        if acquired:
+            with self._lock:
+                self._active[host] = self._active.get(host, 0) + 1
+        return acquired
+
+    def release(self, host: str):
+        """Release a connection slot back to the pool."""
+        sem = self._semaphores.get(host)
+        if sem:
+            sem.release()
+            with self._lock:
+                self._active[host] = max(0, self._active.get(host, 1) - 1)
+
+    def active(self, host: str) -> int:
+        """Return the number of currently active connections for a host."""
+        return self._active.get(host, 0)
+
+    def set_limit(self, host: str, limit: int):
+        """Update the connection limit for a host."""
+        with self._lock:
+            self._limits[host] = limit
+            if host in self._semaphores:
+                # Recreate semaphore with new limit — existing waiters may
+                # need to re-acquire, but this is rare (only on config change)
+                old = self._semaphores[host]
+                self._semaphores[host] = threading.BoundedSemaphore(limit)
+                # Drain old semaphore so no one is waiting on it
+                while old.acquire(blocking=False):
+                    self._semaphores[host].acquire(blocking=False)
+
+
+# ── Global instances ──────────────────────────────────────────────
+
+# Singleton rate limiter shared across the orchestrator
+_rate_limiter: RateLimiter | None = None
+
+def get_rate_limiter() -> RateLimiter:
+    global _rate_limiter
+    if _rate_limiter is None:
+        _rate_limiter = RateLimiter()
+    return _rate_limiter
+
+# Singleton connection limiter shared across the orchestrator  
+_connection_limiter: ConnectionLimiter | None = None
+
+def get_connection_limiter() -> ConnectionLimiter:
+    global _connection_limiter
+    if _connection_limiter is None:
+        _connection_limiter = ConnectionLimiter()
+    return _connection_limiter
