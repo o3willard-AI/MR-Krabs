@@ -399,54 +399,102 @@ Then output ONLY the JSON chunk array (no other text)."""
         except (json.JSONDecodeError, KeyError):
             return None
 
-    def _directory_chunk(
-        self, spec_text: str, metrics: dict, max_per: int = MAX_FILES_PER_CHUNK
+    def _chunk_files(
+        self, files: list[str], max_per: int | None = None
     ) -> list[Chunk]:
-        """Fallback: chunk by directory proximity."""
-        files = self._extract_files(spec_text)
-        if not files:
-            return [
-                Chunk(
-                    name="full_project",
-                    files=["(no files detected)"],
-                    description="No file references found in spec",
-                )
-            ]
+        """Chunk files using dependency-aware grouping when possible.
 
-        # Group by directory
+        Falls back to directory-based chunking when imports can't be parsed.
+        """
+        if max_per is None:
+            max_per = compute_adaptive_chunk_limit(self.library)
+
+        # Try dependency-aware chunking first
+        dep_chunks = self._dependency_chunk(files, max_per)
+        if dep_chunks:
+            return dep_chunks
+
+        # Fall back to directory-based
+        return self._fallback_chunk(files, max_per)
+
+    def _dependency_chunk(self, files: list[str], max_per: int) -> list[Chunk]:
+        """Group files by import dependencies. Shared dependencies first."""
+        # Build a simple import graph from file contents
+        graph: dict[str, set[str]] = {}
+        for fp in files:
+            graph[fp] = set()
+            try:
+                content = Path(self.project_root or ".", fp).read_text()[:2000]
+                imports = re.findall(
+                    r'(?:from\s+\.?(\S+)\s+import|import\s+(\S+))',
+                    content
+                )
+                for imp_tuple in imports:
+                    mod = imp_tuple[0] or imp_tuple[1]
+                    mod = mod.split('.')[0]
+                    # Find which file provides this import
+                    for other in files:
+                        if other != fp and mod in other:
+                            graph[fp].add(other)
+            except Exception:
+                continue
+
+        if not any(graph.values()):
+            return []  # No dependencies found — use fallback
+
+        # Topological sort: files with no deps first
+        visited = set()
+        ordered = []
+
+        def visit(f):
+            if f in visited:
+                return
+            visited.add(f)
+            for dep in graph.get(f, set()):
+                visit(dep)
+            ordered.append(f)
+
+        for f in files:
+            visit(f)
+
+        # Split ordered list into chunks of max_per
+        chunks = []
+        for i in range(0, len(ordered), max_per):
+            batch = ordered[i:i + max_per]
+            chunks.append(Chunk(
+                name=f"chunk_{len(chunks) + 1}",
+                files=batch,
+                description=f"Files {i + 1}-{min(i + max_per, len(ordered))} of {len(ordered)}",
+            ))
+        return chunks
+
+    def _fallback_chunk(self, files: list[str], max_per: int) -> list[Chunk]:
+        """Simple directory-based chunking."""
         dir_groups: dict[str, list[str]] = {}
         for fp in files:
             parts = fp.split("/")
             key = "/".join(parts[:-1]) if len(parts) >= 2 else "root"
             dir_groups.setdefault(key, []).append(fp)
 
-        # Pack into chunks
-        chunks: list[Chunk] = []
-        current_files: list[str] = []
-        current_name = ""
-
-        for dir_name, dir_files in sorted(dir_groups.items(), key=lambda x: len(x[1]), reverse=True):
-            if len(current_files) + len(dir_files) <= max_per:
-                current_files.extend(dir_files)
-                current_name = f"{current_name}_{dir_name}" if current_name else dir_name
+        chunks = []
+        current = []
+        for dir_files in sorted(dir_groups.values(), key=len, reverse=True):
+            if len(current) + len(dir_files) <= max_per:
+                current.extend(dir_files)
             else:
-                # Flush current chunk
-                if current_files:
+                if current:
                     chunks.append(Chunk(
-                        name=current_name.replace("/", "_"),
-                        files=current_files,
-                        description=f"Files in {current_name}",
+                        name=f"chunk_{len(chunks) + 1}",
+                        files=list(current),
+                        description=f"Directory-grouped chunk {len(chunks) + 1}",
                     ))
-                current_files = list(dir_files)
-                current_name = dir_name
-
-        if current_files:
+                current = list(dir_files)
+        if current:
             chunks.append(Chunk(
-                name=current_name.replace("/", "_"),
-                files=current_files,
-                description=f"Files in {current_name}",
+                name=f"chunk_{len(chunks) + 1}",
+                files=list(current),
+                description=f"Directory-grouped chunk {len(chunks) + 1}",
             ))
-
         return chunks
 
     def _split_frontend_backend(self, spec_text: str) -> list[Chunk]:

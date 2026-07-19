@@ -78,6 +78,9 @@ class OuterLoopOrchestrator:
     """Meta-orchestrator: decomposer → MR-Krabs → verifier → learner."""
 
     MAX_RECHUNK_ATTEMPTS = 3  # maximum number of RE-chunks (not including initial attempt)
+    # When running L0-only (local, zero cost), allow more re-chunk attempts
+    # before giving up. Cloud tiers cost money per attempt.
+    MAX_RECHUNK_L0_BONUS = 3  # extra re-chunk attempts when cost is $0
 
     def __init__(
         self,

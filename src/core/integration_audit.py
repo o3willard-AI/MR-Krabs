@@ -566,6 +566,17 @@ def run_audit(
             fix_instruction=""
         ))
 
+    # Check 5: Requirement coverage
+    try:
+        all_findings.extend(check_requirements(files, spec_text))
+    except Exception as e:
+        all_findings.append(Finding(
+            severity="warning", category="audit_internal",
+            file="", line=0,
+            message=f"Requirement check failed: {e}",
+            fix_instruction=""
+        ))
+
     errors = [f for f in all_findings if f.severity == "error"]
     warnings = [f for f in all_findings if f.severity == "warning"]
 
@@ -607,3 +618,115 @@ def format_findings_for_coder(result: AuditResult) -> str:
 
     lines.append("**Action required**: Fix all ERROR-severity findings above, then re-submit.")
     return "\n".join(lines)
+
+
+# ── Check 5: Requirement Coverage ────────────────────────────────
+
+def _extract_requirement_names(spec_text: str) -> list[tuple[str, str]]:
+    """Extract requirement-like function/endpoint names from spec.
+
+    Returns list of (name, requirement_type) tuples.
+    requirement_type: 'must_call', 'must_implement', 'must_define'
+    """
+    reqs = []
+
+    # Pattern: "Implement X(name)" or "Create X() that Y"
+    impl_patterns = [
+        r'(?:Implement|Create|Build|Write)\s+`?(\w+)`?\s*\(',
+        r'(?:function|method)\s+`?(\w+)`?\s*\(',
+        r'`(\w+)\([^)]*\)`\s*[-—–]\s*\w+',
+    ]
+    for pattern in impl_patterns:
+        for match in re.finditer(pattern, spec_text, re.IGNORECASE):
+            name = match.group(1)
+            if len(name) > 2 and not name.startswith('_'):
+                reqs.append((name, 'must_define'))
+
+    # Pattern: "MUST call X()" or "should use Y()"
+    call_patterns = [
+        r'(?:must|should|shall)\s+(?:call|use|invoke|query)\s+`?(\w+)`?\s*\(',
+        r'(?:calls?|uses?|invokes?|queries?)\s+`?(\w+)`?\s*\(',
+    ]
+    for pattern in call_patterns:
+        for match in re.finditer(pattern, spec_text, re.IGNORECASE):
+            name = match.group(1)
+            if len(name) > 2:
+                reqs.append((name, 'must_call'))
+
+    # Deduplicate
+    seen = set()
+    unique = []
+    for name, rtype in reqs:
+        key = (name.lower(), rtype)
+        if key not in seen:
+            seen.add(key)
+            unique.append((name, rtype))
+
+    return unique
+
+
+def check_requirements(files: dict[str, str], spec_text: str) -> list[Finding]:
+    """Verify that spec-required functions/endpoints exist and are called.
+
+    For each requirement extracted from the spec:
+    - 'must_define': verify the function/endpoint EXISTS in the files
+    - 'must_call': verify the function/endpoint is CALLED somewhere
+    """
+    findings = []
+    reqs = _extract_requirement_names(spec_text)
+    if not reqs:
+        return findings
+
+    # Collect all defined names and call sites from all files
+    all_defs = {}
+    all_calls = set()
+    for filepath, content in files.items():
+        if not filepath.endswith('.py'):
+            continue
+        try:
+            tree = ast.parse(content)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    all_defs[node.name.lower()] = (filepath, node.lineno)
+                elif isinstance(node, ast.Call):
+                    if isinstance(node.func, ast.Name):
+                        all_calls.add(node.func.id.lower())
+                    elif isinstance(node.func, ast.Attribute):
+                        all_calls.add(node.func.attr.lower())
+            # Also check for route decorators
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    for decorator in node.decorator_list:
+                        if isinstance(decorator, ast.Call):
+                            if isinstance(decorator.func, ast.Attribute):
+                                all_defs[f"/{node.name}"] = (filepath, node.lineno)
+        except SyntaxError:
+            continue
+
+    for name, rtype in reqs:
+        name_lower = name.lower()
+        if rtype == 'must_define':
+            if name_lower not in all_defs and not any(
+                name_lower in d for d in all_defs
+            ):
+                findings.append(Finding(
+                    severity="error",
+                    category="requirement_missing",
+                    file="",
+                    line=0,
+                    message=f"Required function/endpoint '{name}' is not defined in any file",
+                    fix_instruction=f"Implement '{name}()' as specified in the requirements.",
+                ))
+        elif rtype == 'must_call':
+            if name_lower in all_defs and name_lower not in all_calls:
+                fpath, lineno = all_defs[name_lower]
+                findings.append(Finding(
+                    severity="error",
+                    category="requirement_dead",
+                    file=fpath,
+                    line=lineno,
+                    message=f"'{name}()' is defined but never called — spec requires it to be invoked",
+                    fix_instruction=f"Add a call to '{name}()' in the execution path that needs it.",
+                ))
+
+    return findings
