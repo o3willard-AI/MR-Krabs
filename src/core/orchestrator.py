@@ -1401,6 +1401,26 @@ class LLMOrchestrator:
                 output += f" ... and {len(written_paths) - 10} more"
             output += "]"
 
+        # ── Template echo detection ───────────────────────────────
+        # Cloud models (especially via OpenCode) sometimes echo the
+        # judge's coaching reply template instead of producing code.
+        # Detect this and flag as a failure so the loop can retry
+        # with a cleaned prompt.
+        if _is_template_echo(output, written_paths, workdir_path):
+            print(f"  [TEMPLATE-ECHO] OpenCode output looks like a coaching "
+                  f"reply template, not code — flagging as failure")
+            return {
+                "success": False,
+                "error": (
+                    "OpenCode produced a coaching reply template echo "
+                    "instead of code. The prompt likely contained "
+                    "judge feedback that leaked into the model's output."
+                ),
+                "ready_for_escalation": True,
+                "duration_seconds": duration,
+                "written_paths": written_paths,
+            }
+
         return {
             "success": True,
             "output": output,
@@ -2887,3 +2907,42 @@ class LLMOrchestrator:
             "truncated": any_truncation,
             "pipeline_health": self.monitor.check_health(),
         }
+
+
+def _is_template_echo(output: str, written_paths: list[str], workdir: Path) -> bool:
+    """Detect when an LLM echoed the coaching reply template instead of writing code.
+
+    Cloud models (especially via OpenCode) sometimes see the judge's coaching
+    reply format in their prompt and produce the template structure as their
+    output rather than actual code. This detects those echoes.
+
+    Checks both the text output and the content of any written files.
+    """
+    echo_patterns = [
+        "COACHING REPLY:",
+        "follow the 5-point structure",
+        "## Coaching Reply",
+        "1. What was done well",
+        "2. What specific thing is wrong",
+        "3. Why it's wrong",
+        "4. How to fix it",
+        "5. What to verify after fixing",
+    ]
+
+    # Check text output
+    if output:
+        for pattern in echo_patterns:
+            if pattern.lower() in output.lower():
+                return True
+
+    # Check file contents for template echoes
+    for fp in written_paths[:5]:  # Check first 5 files
+        try:
+            content = Path(fp).read_text()[:500]
+            for pattern in echo_patterns:
+                if pattern.lower() in content.lower():
+                    return True
+        except Exception:
+            pass
+
+    return False

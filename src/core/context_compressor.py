@@ -111,23 +111,80 @@ def _format_accumulated_files(files: dict[str, int]) -> str:
     )
 
 
+def _clean_feedback_for_coder(critique: str) -> str:
+    """Strip judge coaching format, leaving plain fix instructions.
+
+    The judge produces output like:
+        COACHING REPLY:
+        1. What was done well — ...
+        2. What specific thing is wrong — ...
+        3. Why it's wrong — ...
+        4. How to fix it — ...
+        5. What to verify after fixing — ...
+
+    LLMs seeing this template in their context may interpret it as their
+    output format and produce the template instead of code. We strip the
+    coaching structure and keep only the substantive fix content.
+    """
+    if not critique:
+        return ""
+
+    text = critique.strip()
+
+    # Strip the coaching reply header and its 5-point structure labels
+    coaching_patterns = [
+        (r'COACHING\s+REPLY\s*:\s*', ''),
+        (r'PROVISIONALLY\s+ACCEPTED\.?\s*', ''),
+        (r'1\.\s*What\s+was\s+done\s+well\s*[-—–]\s*', '✅ Kept: '),
+        (r'2\.\s*What\s+specific\s+thing\s+is\s+wrong\s*[-—–]\s*', '❌ Issue: '),
+        (r'3\.\s*Why\s+it\'?s?\s+wrong\s*[-—–]\s*', 'Cause: '),
+        (r'4\.\s*How\s+to\s+fix\s+it\s*[-—–]\s*', 'Fix: '),
+        (r'5\.\s*What\s+to\s+verify\s+after\s+fixing\s*[-—–]\s*', 'Verify: '),
+        # Also catch the numbered list without coaching header
+        (r'\*\*1\.\s*\*\*What\s+was\s+done\s+well', '✅ Kept:'),
+        (r'\*\*2\.\s*\*\*What\s+specific', '❌ Issue:'),
+        (r'\*\*3\.\s*\*\*Why', 'Cause:'),
+        (r'\*\*4\.\s*\*\*How\s+to\s+fix', 'Fix:'),
+        (r'\*\*5\.\s*\*\*What\s+to\s+verify', 'Verify:'),
+    ]
+
+    for pattern, replacement in coaching_patterns:
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+
+    # If the critique is just the coaching template with no substance,
+    # extract the actual issue from the task_spec context
+    if len(text.strip()) < 50:
+        return text.strip()
+
+    return text.strip()
+
+
 def _format_feedback(feedback_history: list[str]) -> str:
-    """Format judge feedback, summarizing older critiques."""
+    """Format judge feedback for the coder, stripping coaching format.
+
+    The Judge produces human-readable coaching replies with markdown headers
+    and a 5-point structure. Sending these verbatim to another LLM causes
+    prompt contamination — cloud models (especially via OpenCode) may interpret
+    the coaching template as their output format and echo it back.
+
+    This function strips the coaching structure and produces plain fix
+    instructions suitable for coder consumption.
+    """
     if not feedback_history:
         return ""
 
-    if len(feedback_history) <= MAX_CRITIQUE_HISTORY_VERBOSE:
-        # All verbatim
+    cleaned = [_clean_feedback_for_coder(fb) for fb in feedback_history]
+
+    if len(cleaned) <= MAX_CRITIQUE_HISTORY_VERBOSE:
         lines = []
-        for i, fb in enumerate(feedback_history, 1):
-            lines.append(f"## Previous Attempt {i} Feedback\n\n{fb}")
+        for i, fb in enumerate(cleaned, 1):
+            lines.append(f"## Fixes Needed (Attempt {i})\n\n{fb}")
         return "\n\n".join(lines)
 
-    # Summarize older critiques, keep most recent verbatim
-    older = feedback_history[:-1]
-    most_recent = feedback_history[-1]
+    older = cleaned[:-1]
+    most_recent = cleaned[-1]
 
-    summary_lines = ["## Previous Attempt Summary"]
+    summary_lines = ["## Previous Fix Attempts"]
     for i, fb in enumerate(older, 1):
         short = _summarize_critique(fb)
         summary_lines.append(f"- Attempt {i}: {short}")
@@ -135,7 +192,7 @@ def _format_feedback(feedback_history: list[str]) -> str:
     return (
         "\n".join(summary_lines)
         + "\n\n"
-        + f"## Most Recent Feedback (Attempt {len(feedback_history)})\n\n"
+        + f"## Fixes Needed Now (Attempt {len(feedback_history)})\n\n"
         + most_recent
     )
 
