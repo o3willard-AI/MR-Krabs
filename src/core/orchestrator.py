@@ -2311,6 +2311,64 @@ class LLMOrchestrator:
                 else:
                     tool_result = self.tool_executor.parse_and_execute_tools(result["output"])
 
+                # ── Integration Audit (Loop 4: audit) ────────────────────
+                # Runs BEFORE the Judge. Statically checks for wiring gaps,
+                # stubs, import violations, and dead error paths.
+                # Deterministic, AST-based, zero LLM cost.
+                # On failure, routes findings back to the coder for fixes.
+                try:
+                    from src.core.integration_audit import (
+                        run_audit, format_findings_for_coder,
+                    )
+                    audit_files = {}
+                    for tr in tool_result.get("results", []):
+                        if tr.get("success") and "content" in tr:
+                            audit_files[tr["path"]] = tr["content"]
+                    if audit_files:
+                        task_spec = context.get("task_spec", "")
+                        audit_result = run_audit(
+                            audit_files, task_spec,
+                            project_root=str(project_root or self.project_root),
+                        )
+                        if not audit_result.passed:
+                            errors = [f for f in audit_result.findings
+                                     if f.severity == "error"]
+                            print(f"[AUDIT] FAILED — {len(errors)} error(s) found "
+                                  f"(before Judge evaluation)")
+                            for f in errors[:5]:
+                                print(f"  [{f.category}] {f.file}:{f.line} — "
+                                      f"{f.message[:100]}")
+                            if len(errors) > 5:
+                                print(f"  ... and {len(errors) - 5} more")
+
+                            # Route to coder with fix instructions
+                            fix_prompt = format_findings_for_coder(audit_result)
+                            if retry_num <= max_retries_per_tier:
+                                print(f"[AUDIT] Routing to {tier} for fixes "
+                                      f"(retry {retry_num}/{max_retries_per_tier})")
+                                # Inject findings into context so coder sees them
+                                context["_audit_findings"] = fix_prompt
+                                if "task_spec" in context:
+                                    context["task_spec"] = (
+                                        fix_prompt + "\n\n---\n\n"
+                                        + context["task_spec"]
+                                    )
+                                continue  # Re-enter the tier loop
+                            else:
+                                print(f"[AUDIT] Max retries ({max_retries_per_tier}) "
+                                      f"exceeded — escalating")
+                                break  # Escalate to next tier
+                        else:
+                            wcount = len([f for f in audit_result.findings
+                                         if f.severity == "warning"])
+                            if wcount:
+                                print(f"[AUDIT] PASSED with {wcount} warning(s)")
+                            else:
+                                print(f"[AUDIT] PASSED — all checks clean")
+                except Exception as e:
+                    # Audit shouldn't block the pipeline
+                    print(f"[AUDIT] Internal error (non-blocking): {e}")
+
                 # --- Judge evaluation ---
                 try:
                     print(f"[TRACE] B: judge start, t={_time.monotonic():.0f}")
