@@ -260,6 +260,35 @@ Be direct and specific. "The sort function doesn't handle None inputs —
 add `if lst is None: return []` at the top of the function" is a coaching
 reply. "Missing edge cases" is not.
 
+## Integration Checks (check these explicitly)
+
+Beyond correctness, verify that the implementation is actually COMPLETE and WIRED:
+
+1. **Call-site verification**: For each function the task requires, verify it
+   is actually CALLED somewhere in the execution path. A function that exists
+   but is never invoked (dead code) is a FAILURE — score ≤0.5 even if the
+   function body is correct. Flag with check: "dead_function_<name>".
+
+2. **Stub/mock detection**: Scan for placeholder indicators: "TODO", "FIXME",
+   "placeholder", "stub", "mock data", "for now", "simplified version",
+   "in a real implementation", "# skip". Any of these mean the implementation
+   is INCOMPLETE — score ≤0.4. Flag with check: "stub_detected".
+
+3. **Dependency constraints**: If the task says "stdlib only" or "zero external
+   dependencies", verify ALL imports are from Python's standard library.
+   External imports (requests, pytest for non-test files, etc.) when the
+   spec forbids them is a FAILURE — score ≤0.3. Flag with: "constraint_violation".
+
+4. **Error-path integrity**: For critical operations (filesystem writes, network
+   calls, data mutations), verify that except blocks contain recovery actions
+   (raise, log, rollback, return error) — not just bare `pass` or `continue`.
+   Silent error swallowing in critical paths is a FAILURE — score ≤0.5.
+   Flag with: "swallowed_error_<line>".
+
+These integration checks are AS IMPORTANT as correctness checks. A
+functionally correct function that is never called is useless. A "working"
+proxy that returns mock data is not working. Deduct severely for these.
+
 ## Output Format
 
 Return ONLY valid JSON (no markdown, no explanation outside the JSON):

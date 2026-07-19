@@ -32,6 +32,44 @@ class SubTask:
     pass_num: int = 1
 
 
+def _find_code_block_lines(spec: str) -> set[int]:
+    """Find line numbers that fall inside triple-backtick code blocks.
+
+    Files referenced in code blocks are almost always examples/showing
+    existing code, NOT files the coder should create.
+    """
+    code_lines = set()
+    in_block = False
+    for i, line in enumerate(spec.split('\n'), 1):
+        stripped = line.strip()
+        if stripped.startswith('```'):
+            in_block = not in_block
+            code_lines.add(i)  # The fence line itself
+        elif in_block:
+            code_lines.add(i)
+    return code_lines
+
+def _find_example_section_lines(spec: str) -> set[int]:
+    """Find lines inside sections that describe input/examples, not output.
+
+    Headers like 'Blueprint', 'Example', 'Starting Context', 'Provided'
+    indicate files that already exist, not files to create.
+    """
+    example_headers = re.compile(
+        r'^#{1,3}\s*(?:Blueprint|Example|Starting\s+Context|Provided|'
+        r'Input|Test\s+Data|Sample|Fixture|Setup|Existing)',
+        re.IGNORECASE
+    )
+    example_lines = set()
+    in_example = False
+    for i, line in enumerate(spec.split('\n'), 1):
+        if line.startswith('#'):
+            in_example = bool(example_headers.match(line))
+        elif in_example:
+            example_lines.add(i)
+    return example_lines
+
+
 def extract_file_refs(task_spec: str) -> list[FileRef]:
     """Find all code-file paths mentioned in a task spec.
 
@@ -43,7 +81,16 @@ def extract_file_refs(task_spec: str) -> list[FileRef]:
       - Bare paths like src/config.py in prose
 
     Only includes common code/config extensions.
+
+    FILTERS OUT:
+      - Files inside ```code blocks``` (examples, not targets)
+      - Files in sections titled 'Blueprint', 'Example', 'Starting Context'
+        (these are inputs, not outputs)
     """
+    code_block_lines = _find_code_block_lines(task_spec)
+    example_section_lines = _find_example_section_lines(task_spec)
+    excluded_lines = code_block_lines | example_section_lines
+
     code_extensions = (
         r'\.(?:py|md|yaml|yml|toml|json|cfg|ini|sh|sql|html|css|js|ts|rs|go|java|c|cpp|h|hpp)'
     )
@@ -57,10 +104,10 @@ def extract_file_refs(task_spec: str) -> list[FileRef]:
     )
     for match in backtick_pattern.finditer(task_spec):
         path = match.group(1).strip()
-        if path in seen:
+        line_no = task_spec[:match.start()].count('\n') + 1
+        if path in seen or line_no in excluded_lines:
             continue
         seen.add(path)
-        line_no = task_spec[:match.start()].count('\n') + 1
         refs.append(FileRef(
             path=path, action='modify',
             section_start=line_no, section_end=line_no + 5,
@@ -75,7 +122,8 @@ def extract_file_refs(task_spec: str) -> list[FileRef]:
     )
     for match in line_pattern.finditer(task_spec):
         path = match.group(1).strip()
-        if path in seen:
+        line_no = task_spec[:match.start()].count('\n') + 1
+        if path in seen or line_no in excluded_lines:
             continue
         seen.add(path)
         line_no = task_spec[:match.start()].count('\n') + 1
@@ -90,7 +138,8 @@ def extract_file_refs(task_spec: str) -> list[FileRef]:
     )
     for match in bare_pattern.finditer(task_spec):
         path = match.group(1).strip()
-        if path in seen:
+        line_no = task_spec[:match.start()].count('\n') + 1
+        if path in seen or line_no in excluded_lines:
             continue
         seen.add(path)
         line_no = task_spec[:match.start()].count('\n') + 1

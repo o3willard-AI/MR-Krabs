@@ -2507,29 +2507,82 @@ class LLMOrchestrator:
                         if not verify_result.passed:
                             print(f"[VERIFY] Runtime verification FAILED "
                                   f"(exit {verify_result.exit_code})")
-                            duration_seconds = time.monotonic() - start_mono
-                            return {
-                                "task_id": task_id,
-                                "success": False,
-                                "output": result["output"],
-                                "score": verdict.score,
-                                "files": files,
-                                "tier_used": tier,
-                                "attempts_total": attempts_total,
-                                "retries_per_tier": retries_per_tier,
-                                "verdict": verdict,
-                                "cost_summary": self.cost_tracker.get_summary(),
-                                "escalation_path": escalation_path + [tier],
-                                "duration_seconds": duration_seconds,
-                                "tool_results": tool_result,
-                                "verify_failed": True,
-                                "verify_result": {
-                                    "exit_code": verify_result.exit_code,
-                                    "command": verify_result.command,
-                                    "errors": verify_result.errors,
-                                    "error_summary": verify_result.error_summary,
-                                },
-                            }
+
+                            # ── Loop 2 retry: fix → verify → repeat ──
+                            # Don't bail — route the failure back to the coder
+                            # for targeted fixes, then re-verify.
+                            verify_max = (
+                                self.verify_config.max_retries
+                                if self.verify_config else 3
+                            )
+                            fix_tier = (
+                                self.verify_config.coder_tier
+                                if self.verify_config else "l0-coder"
+                            )
+
+                            if retry_num < verify_max:
+                                print(f"[VERIFY] Routing to {fix_tier} for "
+                                      f"runtime fixes "
+                                      f"(attempt {retry_num}/{verify_max})")
+                                # Inject failure output into task spec
+                                error_text = "\n".join(
+                                    verify_result.errors[-20:]
+                                ) if verify_result.errors else (
+                                    f"Tests failed with exit code "
+                                    f"{verify_result.exit_code}"
+                                )
+                                fix_context = (
+                                    f"## RUNTIME FIX REQUIRED\n\n"
+                                    f"The previous implementation fails at "
+                                    f"runtime. Fix the errors below and "
+                                    f"re-submit:\n\n```\n{error_text}\n```\n\n"
+                                    f"Command that failed: "
+                                    f"`{verify_result.command}`\n"
+                                )
+                                if "task_spec" in context:
+                                    context["task_spec"] = (
+                                        fix_context + "\n---\n"
+                                        + context["task_spec"]
+                                    )
+                                retry_num += 1
+                                retries_per_tier[tier] += 1
+                                continue  # Re-enter the tier retry loop
+                            else:
+                                print(f"[VERIFY] Max verify retries "
+                                      f"({verify_max}) exhausted")
+                                duration_seconds = (
+                                    time.monotonic() - start_mono
+                                )
+                                return {
+                                    "task_id": task_id,
+                                    "success": False,
+                                    "output": result["output"],
+                                    "score": verdict.score,
+                                    "files": files,
+                                    "tier_used": tier,
+                                    "attempts_total": attempts_total,
+                                    "retries_per_tier": retries_per_tier,
+                                    "verdict": verdict,
+                                    "cost_summary": (
+                                        self.cost_tracker.get_summary()
+                                    ),
+                                    "escalation_path": (
+                                        escalation_path + [tier]
+                                    ),
+                                    "duration_seconds": duration_seconds,
+                                    "tool_results": tool_result,
+                                    "verify_failed": True,
+                                    "verify_result": {
+                                        "exit_code": (
+                                            verify_result.exit_code
+                                        ),
+                                        "command": verify_result.command,
+                                        "errors": verify_result.errors,
+                                        "error_summary": (
+                                            verify_result.error_summary
+                                        ),
+                                    },
+                                }
                         print(f"[VERIFY] Runtime verification PASSED "
                               f"({verify_result.command})")
 
