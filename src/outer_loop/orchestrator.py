@@ -387,9 +387,16 @@ def _classify_failure(
     if any("Import" in e or "ModuleNotFound" in e for e in integration.import_errors):
         return "missing_dep"
 
-    # Check if any chunk was too large to succeed
+    # Check if any chunk was too large to succeed.
+    # Use the adaptive limit if available, otherwise fall back to
+    # probe_tier_capacity() — hardware-aware, not hardcoded.
+    try:
+        from src.outer_loop.decomposer import compute_adaptive_chunk_limit
+        limit = compute_adaptive_chunk_limit(None)  # No library yet
+    except Exception:
+        limit = 3  # Conservative default for local hardware
     for chunk, result in chunk_results:
-        if not result.get("success") and len(chunk.files) > 20:
+        if not result.get("success") and len(chunk.files) > limit:
             return "over_chunk"
 
     # Check if chunks were too granular (too many small chunks)

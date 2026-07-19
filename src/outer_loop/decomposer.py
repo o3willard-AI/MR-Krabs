@@ -13,6 +13,7 @@ import json
 import re
 from typing import Any
 
+from src.core.config_loader import get_config
 from src.outer_loop.models import get_outer_loop_models
 from src.outer_loop.pattern_library import (
     Chunk,
@@ -26,10 +27,90 @@ from src.outer_loop.pattern_library import (
 # ── Chunk size baseline ─────────────────────────────────────────────────────
 # The kiosk challenge is our proven sweet spot. Chunks should be roughly
 # this size or smaller.
+#
+# These are FALLBACK values. The decomposer now:
+#   1. Checks learned rules from the pattern library (from past failures)
+#   2. Probes the L0 tier's actual context window
+#   3. Uses the SMALLEST of: learned limit, context-window limit, or hardcoded max
 
 KIOSK_FILE_COUNT = 17   # baseline reference
-MAX_FILES_PER_CHUNK = 20  # slightly larger than kiosk to allow some growth
-MIN_FILES_PER_CHUNK = 3   # don't create micro-chunks
+MAX_FILES_PER_CHUNK = 20  # absolute ceiling
+MIN_FILES_PER_CHUNK = 1   # allow single-file chunks (Jetson, small models)
+
+
+def probe_tier_capacity() -> int:
+    """Query the L0 tier's actual context window and compute safe files-per-pass.
+
+    Returns the recommended max files per chunk based on available context.
+    Smaller models (8K ctx) → 1-2 files. Mid-size (32K) → 3-5 files.
+    Large (128K+) → 10-15 files.
+
+    Falls back to MAX_FILES_PER_CHUNK if probing fails.
+    """
+    try:
+        from src.core.token_budget import resolve_base_url, query_context_window
+        base_url = resolve_base_url(
+            "l0-coder",
+            getattr(get_config(), 'opencode_models', {}),
+            getattr(get_config(), 'pi_models', {}),
+        )
+        if base_url:
+            n_ctx = query_context_window(base_url)
+            if n_ctx:
+                # Conservative formula: ~1 file per 8K of context
+                # 8K → 1 file, 32K → 4 files, 128K → 16 files
+                files_per_pass = max(1, n_ctx // 8192)
+                # Cap at absolute max
+                return min(files_per_pass, MAX_FILES_PER_CHUNK)
+    except Exception:
+        pass
+    return MAX_FILES_PER_CHUNK
+
+
+def get_learned_chunk_limit(library: "PatternLibrary") -> int | None:
+    """Check if the library has a learned max_files_per_chunk rule from failures.
+
+    Returns the learned limit, or None if no failures have been recorded.
+    """
+    if library is None:
+        return None
+    try:
+        for rule in library.rules.values():
+            if "max_files_per_chunk" in rule.condition:
+                # Extract the limit from the condition: "max_files_per_chunk <= N"
+                import re
+                match = re.search(r'<=\s*(\d+)', rule.condition)
+                if match and rule.confidence >= 0.5:
+                    limit = int(match.group(1))
+                    # Only apply if it's more restrictive than the ceiling
+                    if limit < MAX_FILES_PER_CHUNK:
+                        return limit
+    except Exception:
+        pass
+    return None
+
+
+def compute_adaptive_chunk_limit(library: "PatternLibrary") -> int:
+    """Compute the optimal max files per chunk for current hardware.
+
+    Combines three signals:
+    1. Learned limit from past failures (most important)
+    2. Context window probe (hardware capacity)
+    3. Absolute ceiling (safety)
+
+    Returns the smallest of all three, clamped to [MIN_FILES_PER_CHUNK, MAX_FILES_PER_CHUNK].
+    """
+    limits = [MAX_FILES_PER_CHUNK]
+
+    learned = get_learned_chunk_limit(library)
+    if learned:
+        limits.append(learned)
+
+    capacity = probe_tier_capacity()
+    if capacity:
+        limits.append(capacity)
+
+    return max(MIN_FILES_PER_CHUNK, min(limits))
 
 
 class Decomposer:
@@ -46,9 +127,21 @@ class Decomposer:
         1. Rule engine match (fast, deterministic)
         2. LLM structural analysis (when no rules match)
         3. Semantic fallback (novel project shapes, only if embeddings available)
+
+        The chunk size adapts to the hardware: probes context window and
+        incorporates learned limits from past failures.
         """
         project_id = hash_spec(spec_text)
         metrics = compute_spec_metrics(spec_text)
+
+        # ── Adaptive chunk limit ──────────────────────────────────
+        # Check if past failures have taught us a smaller chunk size
+        adaptive_limit = compute_adaptive_chunk_limit(self.library)
+        if adaptive_limit < MAX_FILES_PER_CHUNK:
+            metrics["max_files_per_chunk"] = adaptive_limit
+            print(f"  [DECOMPOSE] Adaptive chunk limit: {adaptive_limit} files "
+                  f"(learned={get_learned_chunk_limit(self.library)}, "
+                  f"capacity={probe_tier_capacity()})")
 
         # ── Step 1: Try rule engine ────────────────────────────────
         matching_rules = self.library.get_matching_rules(metrics)
