@@ -39,6 +39,15 @@ Human writes spec → MR-Krabs loop (coder → judge → retry/accept → escala
   coaching replies. Can be the same model as the coder — peer judging produces
   calibrated scores; disproportionate judge models create impossible quality bars.
 
+> **Naming note:** these L0/L1/L2 are *model/capability tiers* (which model runs
+> the work). They are **not** the L0/L1/L2 *assurance levels* of the
+> [RAE spec](https://github.com/o3willard-AI/RAE) (how strongly the accountable
+> human's identity is established). MR-Krabs displays an RAE at **L0 (declared,
+> unverified)** — the operator who submits the task and reviews the output is
+> the accountable human, self-declared and not verified. See
+> [docs/ACCOUNTABILITY.md](docs/ACCOUNTABILITY.md) and
+> [RAE-CONFORMANCE.md](RAE-CONFORMANCE.md).
+
 ### Coder sub-agent: PI Coding Agent (recommended)
 
 **PI is the recommended sub-agent for multi-file tasks.** On a 27B model at 49K
@@ -188,6 +197,7 @@ result = orch.execute_with_judge(
 | [JUDGE.md](docs/JUDGE.md) | Judge best practices, coaching reply spec |
 | [COOKBOOK.md](docs/COOKBOOK.md) | Integration recipes, env vars |
 | [TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Common failure modes and fixes |
+| [ACCOUNTABILITY.md](docs/ACCOUNTABILITY.md) | RAE accountability model, L0 declared operator, model-tier vs assurance-level disambiguation |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup, testing, PR process |
 | [reference-configs/](docs/reference-configs/) | Proven configs with rationale |
 
