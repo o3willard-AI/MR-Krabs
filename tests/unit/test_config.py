@@ -14,6 +14,7 @@ from src.core.config import (
     _find_config,
     config_to_budget,
     load_config,
+    resolve_operator,
     _validate_config_version,
 )
 from src.core.cost import Decimal, FailureMode
@@ -151,3 +152,50 @@ class TestDefaultConfig:
         assert "tiers" in DEFAULT_CONFIG
         assert "L0" in DEFAULT_CONFIG["tiers"]
         assert "L1" in DEFAULT_CONFIG["tiers"]
+
+
+class TestDefaultConfigOperator:
+    """Tests for the default operator block (RAE)."""
+
+    def test_has_operator_block(self):
+        assert "operator" in DEFAULT_CONFIG
+        assert "operator_id" in DEFAULT_CONFIG["operator"]
+        assert "operator_name" in DEFAULT_CONFIG["operator"]
+
+    def test_operator_defaults_are_empty(self):
+        assert DEFAULT_CONFIG["operator"]["operator_id"] == ""
+        assert DEFAULT_CONFIG["operator"]["operator_name"] == ""
+
+
+class TestResolveOperator:
+    """Tests for the operator resolver (RAE)."""
+
+    def test_unset_falls_back_to_os_username(self):
+        with patch("getpass.getuser", return_value="sblanken"):
+            operator_id, operator_name = resolve_operator({})
+        assert operator_id == "sblanken"
+        assert operator_name == "sblanken"
+
+    def test_no_config_falls_back_to_os_username(self):
+        with patch("getpass.getuser", return_value="sblanken"):
+            operator_id, operator_name = resolve_operator()
+        assert operator_id == "sblanken"
+        assert operator_name == "sblanken"
+
+    def test_configured_operator_id_and_name(self):
+        config = {
+            "operator": {
+                "operator_id": "op-42",
+                "operator_name": "Ada Lovelace",
+            }
+        }
+        operator_id, operator_name = resolve_operator(config)
+        assert operator_id == "op-42"
+        assert operator_name == "Ada Lovelace"
+
+    def test_configured_id_without_name_falls_back_to_id(self):
+        config = {"operator": {"operator_id": "op-42"}}
+        with patch("getpass.getuser", return_value="sblanken"):
+            operator_id, operator_name = resolve_operator(config)
+        assert operator_id == "op-42"
+        assert operator_name == "op-42"
