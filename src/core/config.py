@@ -10,6 +10,7 @@ TOML is preferred over YAML because:
 
 from __future__ import annotations
 
+import getpass
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "context_simplification": {
         "enabled": False,
         "multipliers": [1.0, 0.7, 0.4],
+    },
+    # Operator identity (RAE). Self-declared — RAE L0. Empty strings fall back
+    # to the OS username via resolve_operator(); never holds credential material.
+    "operator": {
+        "operator_id": "",
+        "operator_name": "",
     },
     "task_timeout_seconds": 300,
     "max_task_duration_seconds": 300,
@@ -92,6 +99,36 @@ def _validate_config_version(user_config: dict[str, Any]) -> None:
             f"code expects v{CURRENT_CONFIG_VERSION}. "
             f"Run 'orchestrator config migrate' to upgrade."
         )
+
+
+def resolve_operator(config: dict[str, Any] | None = None) -> tuple[str, str]:
+    """Resolve the accountable operator (RAE) from config, defaulting to OS username.
+
+    Returns (operator_id, operator_name). If operator_id is unset or empty, it
+    falls back to getpass.getuser(); operator_name falls back to operator_id
+    then to the OS username. The operator is self-declared (RAE L0) — no
+    verification is performed and fields never carry credential material.
+
+    Args:
+        config: Optional config dict. If None or missing the "operator" key,
+            both fields default to the OS username.
+
+    Returns:
+        (operator_id, operator_name) tuple.
+    """
+    operator = (config or {}).get("operator", {}) or {}
+    username = getpass.getuser()
+
+    operator_id = (operator.get("operator_id") or username).strip()
+    operator_name = (operator.get("operator_name") or operator_id or username).strip()
+
+    # No-secret property: never let a resolved value carry credential material.
+    if operator_id in ("", "PROTECTED") or "TOKEN" in operator_id.upper():
+        operator_id = username
+    if operator_name in ("", "PROTECTED") or "TOKEN" in operator_name.upper():
+        operator_name = operator_id or username
+
+    return operator_id, operator_name
 
 
 def config_to_budget(config: dict[str, Any]) -> Budget:

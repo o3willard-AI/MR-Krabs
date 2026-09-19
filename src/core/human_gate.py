@@ -4,10 +4,18 @@ import json
 from pathlib import Path
 from typing import Tuple, Optional
 
+from src.core.config import resolve_operator
+
 
 def _pending_dir() -> Path:
     """Lazy compute the pending directory so tests can override HOME."""
     return Path(os.path.expanduser("~/.mrkrabs/pending"))
+
+
+def _operator() -> dict:
+    """Return the resolved operator identity (RAE) as a dict."""
+    operator_id, operator_name = resolve_operator()
+    return {"operator_id": operator_id, "operator_name": operator_name}
 
 
 TIMEOUT_MINUTES = 15  # default
@@ -29,6 +37,9 @@ def write_pending_file(task_id: str, info: dict) -> Path:
     
     file_path = pending_dir / f"{task_id}.json"
     serializable = _to_serializable(info)
+    # RAE: the pending file names the accountable human who requested escalation.
+    serializable.setdefault("operator_id", _operator()["operator_id"])
+    serializable.setdefault("operator_name", _operator()["operator_name"])
     with open(file_path, 'w') as f:
         json.dump(serializable, f, indent=2)
     
@@ -82,6 +93,7 @@ def confirm_task(task_id: str) -> None:
         
         data['confirmed'] = True
         data['confirmed_at'] = time.time()
+        data['confirmed_by'] = _operator()
         
         with open(file_path, 'w') as f:
             json.dump(data, f, indent=2)
@@ -97,6 +109,7 @@ def deny_task(task_id: str, reason: str = "") -> None:
         data['confirmed'] = False
         data['reason'] = reason
         data['denied_at'] = time.time()
+        data['denied_by'] = _operator()
         
         with open(file_path, 'w') as f:
             json.dump(data, f, indent=2)

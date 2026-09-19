@@ -18,7 +18,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+
+from src.core.config import resolve_operator
 
 
 class PromptFlowLogger:
@@ -34,6 +35,8 @@ class PromptFlowLogger:
         self.task_id = task_id
         self.base_dir = Path(base_dir).expanduser()
         self.seq = 0
+        # RAE: every recorded interaction names the accountable human.
+        self._operator_id, self._operator_name = resolve_operator()
 
     def log(self, agent: str, input_text: str, output_text: str) -> None:
         """Log an agent interaction. No-op when disabled."""
@@ -50,6 +53,8 @@ class PromptFlowLogger:
             "agent": agent,
             "task_id": self.task_id,
             "timestamp": ts,
+            "operator_id": self._operator_id,
+            "operator_name": self._operator_name,
             "input_chars": len(input_text),
             "output_chars": len(output_text),
         }
