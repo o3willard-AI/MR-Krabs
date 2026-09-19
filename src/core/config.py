@@ -10,6 +10,7 @@ TOML is preferred over YAML because:
 
 from __future__ import annotations
 
+import getpass
 import tomllib
 from pathlib import Path
 from typing import Any
@@ -20,6 +21,12 @@ CURRENT_CONFIG_VERSION = "1.0"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "version": CURRENT_CONFIG_VERSION,
+    "operator": {
+        # RAE L0 (self-declared, never verified): the accountable human.
+        # Empty → resolved at runtime to the OS username (see resolve_operator).
+        "operator_id": "",
+        "operator_name": "",
+    },
     "budget": {
         "daily_limit_usd": "10.00",
         "task_limit_usd": "1.00",
@@ -54,6 +61,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "task_timeout_seconds": 300,
     "max_task_duration_seconds": 300,
 }
+
+
+def resolve_operator(config: dict[str, Any] | None = None) -> dict[str, str]:
+    """Resolve the accountable operator (RAE L0, self-declared, never verified).
+
+    Returns ``{"operator_id": ..., "operator_name": ...}``.
+
+    - operator_id  : the configured value, falling back to the OS username
+      (:func:`getpass.getuser`) when unset/blank. A human is therefore always
+      named, even when no operator is configured.
+    - operator_name: the configured value, falling back to the resolved
+      operator_id.
+
+    Passing a config with an ``operator`` section (e.g. ``load_config()``'s
+    result or ``DEFAULT_CONFIG``) feeds the configured identity; passing
+    ``None``/empty always yields the OS username.
+    """
+    op = (config or {}).get("operator", {}) if isinstance(config, dict) else {}
+    operator_id = str(op.get("operator_id") or "").strip() or getpass.getuser()
+    operator_name = str(op.get("operator_name") or "").strip() or operator_id
+    return {"operator_id": operator_id, "operator_name": operator_name}
 
 
 def load_config(config_path: Path | None = None) -> dict[str, Any]:

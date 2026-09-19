@@ -2,7 +2,9 @@ import os
 import time
 import json
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Tuple, Optional, cast
+
+from src.core.config import resolve_operator
 
 
 def _pending_dir() -> Path:
@@ -29,8 +31,12 @@ def write_pending_file(task_id: str, info: dict) -> Path:
     
     file_path = pending_dir / f"{task_id}.json"
     serializable = _to_serializable(info)
+    operator = resolve_operator()
+    pending = cast(dict, serializable) if isinstance(serializable, dict) else {}
+    pending["operator_id"] = operator["operator_id"]
+    pending["operator_name"] = operator["operator_name"]
     with open(file_path, 'w') as f:
-        json.dump(serializable, f, indent=2)
+        json.dump(pending, f, indent=2)
     
     return file_path
 
@@ -82,6 +88,7 @@ def confirm_task(task_id: str) -> None:
         
         data['confirmed'] = True
         data['confirmed_at'] = time.time()
+        data['confirmed_by'] = resolve_operator()['operator_id']
         
         with open(file_path, 'w') as f:
             json.dump(data, f, indent=2)
@@ -97,6 +104,7 @@ def deny_task(task_id: str, reason: str = "") -> None:
         data['confirmed'] = False
         data['reason'] = reason
         data['denied_at'] = time.time()
+        data['denied_by'] = resolve_operator()['operator_id']
         
         with open(file_path, 'w') as f:
             json.dump(data, f, indent=2)

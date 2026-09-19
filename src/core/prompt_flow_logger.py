@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from src.core.config import resolve_operator
+
 
 class PromptFlowLogger:
     """Writes prompt flow debug dumps. No-op when disabled."""
@@ -29,11 +31,18 @@ class PromptFlowLogger:
         task_id: str,
         enabled: bool = False,
         base_dir: str | Path = "~/.mrkrabs/debug",
+        operator_id: str = "",
+        operator_name: str = "",
     ):
         self.enabled = enabled
         self.task_id = task_id
         self.base_dir = Path(base_dir).expanduser()
         self.seq = 0
+        # RAE L0: name the accountable operator; explicit args win, else the
+        # resolver (which defaults to the OS username).
+        operator = resolve_operator()
+        self.operator_id = operator_id or operator["operator_id"]
+        self.operator_name = operator_name or operator["operator_name"]
 
     def log(self, agent: str, input_text: str, output_text: str) -> None:
         """Log an agent interaction. No-op when disabled."""
@@ -49,6 +58,8 @@ class PromptFlowLogger:
             "seq": self.seq,
             "agent": agent,
             "task_id": self.task_id,
+            "operator_id": self.operator_id,
+            "operator_name": self.operator_name,
             "timestamp": ts,
             "input_chars": len(input_text),
             "output_chars": len(output_text),

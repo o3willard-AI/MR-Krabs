@@ -2,6 +2,7 @@
 """
 Tests for failure action system.
 """
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -229,3 +230,81 @@ def test_integration_orchestrator_failure_action_import():
     assert FailureAction.LOG_ONLY == get_tier_failure_action("L0-Coder")
     assert FailureAction.NOTIFY_AND_ESCALATE == get_tier_failure_action("L1-Coder")
     assert FailureAction.NOTIFY_AND_WAIT == get_tier_failure_action("L2-Coder")
+
+
+# --- RAE L0: operator identity recorded on pending/confirm/deny records ---
+
+
+def test_write_pending_file_includes_operator():
+    """Pending file always names the accountable operator (RAE L0)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        original_home = os.path.expanduser("~/.mrkrabs/pending")
+        os.environ["HOME"] = tmp_dir
+
+        with patch(
+            "src.core.human_gate.resolve_operator",
+            return_value={"operator_id": "mr-krabs", "operator_name": "MR Krabs"},
+        ):
+            file_path = write_pending_file("test-task-123", {"tier": "L2-Coder"})
+
+        with open(file_path) as f:
+            data = json.load(f)
+        # Mutation check: if operator_id/operator_name are not added to the
+        # pending record, this assertion fails.
+        assert data["operator_id"] == "mr-krabs"
+        assert data["operator_name"] == "MR Krabs"
+
+        os.environ["HOME"] = original_home
+
+
+def test_confirm_task_records_confirmed_by():
+    """confirm_task records who confirmed (RAE L0 operator id)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        original_home = os.path.expanduser("~/.mrkrabs/pending")
+        os.environ["HOME"] = tmp_dir
+
+        pending_file = Path(tmp_dir) / ".mrkrabs" / "pending" / "test-task-123.json"
+        pending_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(pending_file, "w") as f:
+            json.dump({"tier": "L2-Coder"}, f)
+
+        with patch(
+            "src.core.human_gate.resolve_operator",
+            return_value={"operator_id": "mr-krabs", "operator_name": "MR Krabs"},
+        ):
+            confirm_task("test-task-123")
+
+        with open(pending_file) as f:
+            data = json.load(f)
+        # Mutation check: removing the confirmed_by recording fails this.
+        assert data["confirmed"] is True
+        assert data["confirmed_by"] == "mr-krabs"
+
+        os.environ["HOME"] = original_home
+
+
+def test_deny_task_records_denied_by():
+    """deny_task records who denied (RAE L0 operator id)."""
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        original_home = os.path.expanduser("~/.mrkrabs/pending")
+        os.environ["HOME"] = tmp_dir
+
+        pending_file = Path(tmp_dir) / ".mrkrabs" / "pending" / "test-task-123.json"
+        pending_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(pending_file, "w") as f:
+            json.dump({"tier": "L2-Coder"}, f)
+
+        with patch(
+            "src.core.human_gate.resolve_operator",
+            return_value={"operator_id": "mr-krabs", "operator_name": "MR Krabs"},
+        ):
+            deny_task("test-task-123", "User requested cancellation")
+
+        with open(pending_file) as f:
+            data = json.load(f)
+        # Mutation check: removing the denied_by recording fails this.
+        assert data["confirmed"] is False
+        assert data["reason"] == "User requested cancellation"
+        assert data["denied_by"] == "mr-krabs"
+
+        os.environ["HOME"] = original_home
