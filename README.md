@@ -39,6 +39,18 @@ Human writes spec → MR-Krabs loop (coder → judge → retry/accept → escala
   coaching replies. Can be the same model as the coder — peer judging produces
   calibrated scores; disproportionate judge models create impossible quality bars.
 
+> **Two different "L0/L1/L2" — don't conflate them.** The tiers above (**L0 →
+> L1 → L2 → Principal**) are *model/capability tiers*: they route work to
+> cheaper or more capable models. They are **not** the L0/L1/L2 *assurance
+> levels* of the [Registered Accountable Entity (RAE)](https://github.com/o3willard-AI/RAE)
+> spec, which grade how firmly the accountable human is identified. Same
+> labels, unrelated meanings. MR-Krabs records a declared **RAE at L0
+> (declared, unverified)** — the human operator who submits the spec and
+> reviews the final output is the accountable human, and all orchestrated work
+> (coder/judge/escalation) is attributable to them. See
+> [docs/accountability.md](docs/accountability.md) and
+> [RAE-CONFORMANCE.md](RAE-CONFORMANCE.md).
+
 ### Coder sub-agent: PI Coding Agent (recommended)
 
 **PI is the recommended sub-agent for multi-file tasks.** On a 27B model at 49K
@@ -184,6 +196,8 @@ result = orch.execute_with_judge(
 |----------|---------|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Full pipeline design, component map |
 | [HARDWARE-TIERS.md](docs/HARDWARE-TIERS.md) | Three-tier hardware guide (12/24/36 GB VRAM) |
+| [accountability.md](docs/accountability.md) | RAE accountability model; model-tier vs assurance-level disambiguation |
+| [RAE-CONFORMANCE.md](RAE-CONFORMANCE.md) | RAE L0 claim boundary, clause status, proof location |
 | [MODEL_CONFIG.md](docs/MODEL_CONFIG.md) | Config reference with example deployments |
 | [JUDGE.md](docs/JUDGE.md) | Judge best practices, coaching reply spec |
 | [COOKBOOK.md](docs/COOKBOOK.md) | Integration recipes, env vars |
