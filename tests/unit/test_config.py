@@ -15,6 +15,7 @@ from src.core.config import (
     config_to_budget,
     load_config,
     _validate_config_version,
+    resolve_operator,
 )
 from src.core.cost import Decimal, FailureMode
 
@@ -151,3 +152,41 @@ class TestDefaultConfig:
         assert "tiers" in DEFAULT_CONFIG
         assert "L0" in DEFAULT_CONFIG["tiers"]
         assert "L1" in DEFAULT_CONFIG["tiers"]
+
+
+class TestResolveOperator:
+    """Tests for resolve_operator (RAE L0 identity)."""
+
+    def test_returns_configured_operator(self):
+        config = {
+            "operator": {
+                "operator_id": "mr-krabs",
+                "operator_name": "MR Krabs",
+            }
+        }
+        op = resolve_operator(config)
+        assert op == {"operator_id": "mr-krabs", "operator_name": "MR Krabs"}
+
+    def test_defaults_to_os_username(self):
+        with patch("src.core.config.getpass.getuser", return_value="os-user"):
+            op = resolve_operator({})
+        assert op == {"operator_id": "os-user", "operator_name": "os-user"}
+        # Removing the getuser fallback breaks this — the OS username must
+        # always be named (RAE L0), even with no operator configured.
+
+    def test_no_config_defaults_to_os_username(self):
+        with patch("src.core.config.getpass.getuser", return_value="os-user"):
+            op = resolve_operator(None)
+        assert op["operator_id"] == "os-user"
+
+    def test_blank_config_values_default_to_os_username(self):
+        config = {"operator": {"operator_id": "", "operator_name": ""}}
+        with patch("src.core.config.getpass.getuser", return_value="os-user"):
+            op = resolve_operator(config)
+        assert op == {"operator_id": "os-user", "operator_name": "os-user"}
+
+    def test_name_defaults_to_id(self):
+        config = {"operator": {"operator_id": "kermit"}}
+        with patch("src.core.config.getpass.getuser", return_value="os-user"):
+            op = resolve_operator(config)
+        assert op == {"operator_id": "kermit", "operator_name": "kermit"}
