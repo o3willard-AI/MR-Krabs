@@ -33,7 +33,7 @@ jobs:
           cache: 'pip'
       - name: Install dependencies
         run: |
-          pip install -e .[dev]
+          pip install -e .[dev,openai,anthropic]
       - name: Run existing test suite (feature flags OFF)
         run: |
           python -m pytest tests/unit/ -q
@@ -53,7 +53,7 @@ jobs:
           cache: 'pip'
       - name: Install dependencies
         run: |
-          pip install -e .[dev]
+          pip install -e .[dev,openai,anthropic]
       - name: Run Phase 0 tests (harness validation)
         run: |
           python -m pytest tests/integration_litellm/phase_0/ -v --cov=src/adapters --cov-fail-under=95 --cov-report=term
@@ -92,7 +92,7 @@ jobs:
           cache: 'pip'
       - name: Install dependencies
         run: |
-          pip install -e .[dev]
+          pip install -e .[dev,openai,anthropic]
       - name: Run Phase 2 tests
         run: |
           python -m pytest tests/integration_litellm/phase_2/ -v --cov=src/adapters --cov-fail-under=90 --cov-report=term
@@ -109,7 +109,7 @@ jobs:
           cache: 'pip'
       - name: Install dependencies
         run: |
-          pip install -e .[dev]
+          pip install -e .[dev,openai,anthropic]
           pip install pip-audit
       - name: Run pip-audit
         run: |
