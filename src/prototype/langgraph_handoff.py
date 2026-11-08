@@ -95,11 +95,14 @@ def _default_orchestrator() -> Any:
 
 
 def default_tier_fn(state: HandoffState) -> tuple[str, bool]:
-    """Execute one coder attempt via the real tier backends.
+    """Execute one coder attempt via the shared tier-attempt helper.
 
-    Mirrors execute_with_judge's backend routing exactly: OpenCode
-    first, PI fallback, raw call_llm_with_retry last. Returns the
-    model's output text and whether the attempt produced output.
+    All backend selection lives in
+    LLMOrchestrator._execute_tier_attempt (OpenCode -> PI -> raw LLM,
+    the same routing execute_with_judge inlines). This wrapper only
+    builds the prompt (task spec + judge feedback on retry) and the
+    system prompt, then delegates -- no routing logic is duplicated
+    here anymore.
     """
     orch = _default_orchestrator()
     tier = state["tier"]
@@ -113,26 +116,14 @@ def default_tier_fn(state: HandoffState) -> tuple[str, bool]:
             + state["feedback"]
         )
     system_prompt = orch._get_agent_system_prompt(state.get("task_type", "code"))
-    has_opencode = bool(orch.opencode_models.get(tier.lower()))
-    has_pi = bool(orch.pi_models.get(tier.lower()))
-    if has_opencode:
-        result = orch._execute_opencode_tier(
-            tier, prompt, system_prompt=system_prompt,
-            retry_num=state.get("attempt", 0) + 1,
-            project_root=state.get("project_root") or None,
-        )
-    elif has_pi:
-        result = orch._execute_pi_tier(
-            tier, prompt, system_prompt=system_prompt,
-            retry_num=state.get("attempt", 0) + 1,
-            project_root=state.get("project_root") or None,
-            accumulated_files=set(),
-        )
-    else:
-        result = orch.call_llm_with_retry(
-            tier, system_prompt, prompt,
-            temperature=0.7, timeout_seconds=300.0,
-        )
+    result = orch._execute_tier_attempt(
+        tier,
+        prompt,
+        system_prompt,
+        retry_num=state.get("attempt", 0) + 1,
+        project_root=state.get("project_root") or None,
+        accumulated_files=set(),
+    )
     return str(result.get("output", "")), bool(result.get("success"))
 
 
