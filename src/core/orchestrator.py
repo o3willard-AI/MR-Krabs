@@ -618,6 +618,43 @@ class LLMOrchestrator:
             + "Do NOT use ===FILE: markers — those are for text-mode only."
         )
 
+    def _system_prompt_for_backend(
+        self,
+        tier: str,
+        task_type: str = "code",
+        *,
+        has_feedback: bool = False,
+    ) -> str:
+        """Return the system prompt execute_with_judge uses for a tier.
+
+        Centralizes the per-backend prompt selection that the retry loop
+        inlines (current_sp for OpenCode, current_pi_sp for PI,
+        agent_system_prompt for raw LLM). Pure selection -- no I/O beyond
+        the template-file reads the underlying getters already do.
+
+        has_feedback mirrors the loop's fix-prompt switch: on a retry
+        WITH judge feedback, the OpenCode/PI branches use the "fix"
+        template while the raw-LLM branch keeps the build prompt (the
+        loop passes agent_system_prompt to call_llm_with_retry in both
+        cases). Slice 2's graph code-node needs this exact behavior,
+        with feedback from graph state.
+        """
+        has_opencode = bool(self.opencode_models.get(tier.lower()))
+        has_pi = bool(self.pi_models.get(tier.lower()))
+
+        if has_feedback:
+            if has_opencode:
+                return self._get_agent_system_prompt("fix")
+            if has_pi:
+                return self._get_pi_system_prompt("fix")
+            return self._get_agent_system_prompt(task_type)
+
+        if has_opencode:
+            return self._get_agent_system_prompt(task_type)
+        if has_pi:
+            return self._get_pi_system_prompt(task_type)
+        return self._get_agent_system_prompt(task_type)
+
     def _build_system_prompt(self, tier: str, template: str) -> str:
         """Extract system prompt from template."""
         return template  # template already contains the full prompt
