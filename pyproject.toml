@@ -36,6 +36,12 @@ dependencies = [
     "click>=8.1.7",
     "structlog>=23.2.0",
     "cryptography>=41.0.0",
+    # LangGraph prototype (src/prototype/langgraph_handoff.py): the ONLY
+    # new dependency for wi-LG-HANDOFF. langgraph-checkpoint-sqlite is the
+    # official SqliteSaver package the prototype's durability requirement
+    # mandates (langgraph 1.2.x does not ship a checkpoint-sqlite extra).
+    "langgraph>=1.2.0",
+    "langgraph-checkpoint-sqlite>=3.0.0",
 ]
 
 
