@@ -84,11 +84,16 @@ deploys) and exactly what the test simulates.
   logical transition across three places (node return, router,
   state defaults). For a 4-node graph this is fine; it is why the
   task scoped LangGraph to this slice only.
-* **The wrappers are real indirection.** default_tier_fn re-implements
-  the OpenCode/PI/raw-LLM routing selection (~15 lines) rather than
-  calling one existing method, because execute_with_judge inlines that
-  routing. A production adoption should extract that selection into a
-  shared helper first.
+* **The wrappers are real indirection.** The prototype's
+  `default_tier_fn` originally re-implemented the OpenCode/PI/raw-LLM
+  routing selection (~15 lines) because execute_with_judge inlines it.
+  **Update (wi-LG-HANDOFF-2):** this is now RESOLVED -- the routing
+  lives in one shared method,
+  `LLMOrchestrator._execute_tier_attempt`, which the prototype calls.
+  execute_with_judge itself was deliberately left on its inline copy:
+  it passes different system prompts per backend and interleaves
+  monitor/audit/cost bookkeeping around the call, so rewiring it is a
+  separate deliberate refactor, not a mechanical swap.
 * **Attempt counting differs subtly.** The prototype counts a coder
   attempt when output is produced; the real loop also counts
   recoverable hard failures per backend. Coder-failure handling here
@@ -97,11 +102,15 @@ deploys) and exactly what the test simulates.
 * **Framework lock-in is real but small.** Pinning langgraph 1.2.x
   means tracking its release cadence for a control-flow library; the
   checkpoint format is versioned by the framework, not by us.
-* **Live-run evidence is missing.** No API keys / pi / opencode CLIs
-  exist in the test environment, so the prototype was never run
-  against a real model here. The routing + resume claims are proven;
-  end-to-end LLM behavior is asserted by construction (same functions)
-  but not demonstrated.
+* **Live-run evidence (updated in wi-LG-HANDOFF-2).** At prototype
+  time no API keys / pi / opencode CLIs existed in the test
+  environment, so no live run was possible. That precondition is now
+  CLOSED: with an OpenRouter key in hand, the graph ran end-to-end on
+  the REAL default seams (raw-LLM tier path -> real Judge -> real
+  RuntimeVerifier/py_compile) and reached an accepted verdict on the
+  first attempt (transcript in the wi-LG-HANDOFF-2 PR body). What
+  remains unproven is only the pi/opencode backend branches, which
+  still need those CLIs + model servers.
 
 ## Verdict
 

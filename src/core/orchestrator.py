@@ -677,6 +677,54 @@ class LLMOrchestrator:
         except ValueError:
             return None, f"path escapes sandbox: {path}"
 
+    def _execute_tier_attempt(
+        self,
+        tier: str,
+        prompt: str,
+        system_prompt: str,
+        retry_num: int = 1,
+        project_root: str | None = None,
+        accumulated_files: set[str] | None = None,
+        temperature: float = 0.7,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Execute ONE coder attempt on a tier (shared routing helper).
+
+        Contains exactly the OpenCode -> PI -> raw-LLM backend selection
+        that execute_with_judge inlines -- no retry loop, no bookkeeping,
+        just the routing + one call. Used by the LangGraph prototype
+        (src/prototype/langgraph_handoff.py) so the prototype and any
+        future caller share one routing implementation instead of the
+        routing being duplicated per caller.
+
+        NOTE: execute_with_judge does NOT call this yet. Its loop passes
+        DIFFERENT system prompts per backend (current_sp for OpenCode,
+        current_pi_sp for PI, agent_system_prompt for raw) and interleaves
+        monitor/tool/audit/cost bookkeeping around the call, so wiring the
+        loop to this single-prompt helper needs a deliberate refactor of
+        that prompt selection. Left untouched on purpose; see wi-LG-HANDOFF-2.
+
+        Returns the same dict shape as call_llm_with_retry().
+        """
+        has_opencode = bool(self.opencode_models.get(tier.lower()))
+        has_pi = bool(self.pi_models.get(tier.lower()))
+
+        if has_opencode:
+            return self._execute_opencode_tier(
+                tier, str(prompt), system_prompt=system_prompt,
+                retry_num=retry_num, project_root=project_root,
+            )
+        if has_pi:
+            return self._execute_pi_tier(
+                tier, str(prompt), system_prompt=system_prompt,
+                retry_num=retry_num, project_root=project_root,
+                accumulated_files=accumulated_files or set(),
+            )
+        return self.call_llm_with_retry(
+            tier, system_prompt, str(prompt),
+            temperature=temperature, timeout_seconds=timeout_seconds,
+        )
+
     def _execute_pi_tier(
         self,
         tier: str,
