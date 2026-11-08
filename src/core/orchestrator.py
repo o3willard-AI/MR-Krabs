@@ -1991,6 +1991,561 @@ class LLMOrchestrator:
 
         return "unknown"
 
+    # ── LangGraph per-tier runner (wi-LG-REFACTOR-2) ───────────────────
+    # The retry/escalate loop body of execute_with_judge now runs as a
+    # checkpointed LangGraph graph (src/core/handoff_graph.py). Node
+    # closures reproduce the hand-rolled loop's per-attempt behavior at
+    # the same cadence: context compression, backend call via
+    # _execute_tier_attempt with _system_prompt_for_backend, tool
+    # execution, integration audit (pre-judge), Judge evaluation,
+    # monitor records, cost tracking, JSON checkpoint, runtime verify,
+    # behavioral QA. Returns the final graph state; the caller syncs
+    # counters and assembles the public return dicts exactly as before.
+
+    def _run_tier_graph(
+        self,
+        task_id: str,
+        tier: str,
+        context: dict[str, Any],
+        task_type: str,
+        tier_config: dict,
+        judge_model: str,
+        project_root: str | None,
+        timeout_seconds: float,
+        max_retries_per_tier: int,
+        attempts_total: int,
+        accumulated_files: dict[str, int],
+        best_output: dict,
+        retries_per_tier: dict[str, int],
+        escalation_path: list[str],
+        start_time: float,
+    ) -> dict[str, Any]:
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        from src.core.handoff_graph import (
+            build_tier_graph,
+            initial_tier_state,
+            verdict_dict,
+        )
+
+        model_name = tier_config.get("model", "")
+        db_path = self.escalations_dir / (
+            f"{task_id.replace('/', '_').replace('.', '_')}_handoff.sqlite"
+        )
+        thread_id = f"{task_id}:{tier}"
+        config = {"configurable": {"thread_id": thread_id}}
+
+        # --- Node: code (coder attempt) ---
+        def code_node(state):
+            # --- FailUp mid-retry check (same position as loop top) ---
+            check_mesh_fail_up()
+            if is_fail_up_active():
+                print(f"[FAIL_UP] Aborting tier {tier} mid-retry — bumping up one level")
+                clear_fail_up()
+                return {
+                    "coder_outcome": "fail_up",
+                    "fail_up_aborted": True,
+                    "terminal": "fail_up",
+                }
+
+            retry_num = state["attempt"]
+            task_spec = str(state.get("task_spec", task_id))
+            feedback = state.get("feedback", "")
+
+            # Collect feedback history for this tier across retries
+            if not hasattr(self, '_feedback_history'):
+                self._feedback_history: dict[str, list[str]] = {}
+            tier_fb_key = f"{task_id}:{tier}"
+            if tier_fb_key not in self._feedback_history:
+                self._feedback_history[tier_fb_key] = []
+            if feedback and feedback not in self._feedback_history[tier_fb_key]:
+                self._feedback_history[tier_fb_key].append(feedback)
+            feedback_history = self._feedback_history.get(tier_fb_key, [])
+
+            # Model profile prepend
+            model_key = tier_config.get("profile")
+            prepend = get_prepend(model_key) if model_key else ""
+
+            # Pass-through: only inject accumulated files on first attempt
+            accumulated = state.get("accumulated_files", {})
+            acc_files = accumulated if retry_num == 1 and accumulated else None
+
+            user_prompt = compress_history(
+                task_spec=task_spec,
+                accumulated_files=acc_files,
+                feedback_history=feedback_history,
+                prepend=prepend,
+            )
+
+            # Context fill observability
+            fill = estimate_context_fill(task_spec, acc_files, feedback_history)
+            self.monitor.record_context_fill(tier, fill)
+            if fill > 0.8:
+                print(f"  Context fill: {fill:.0%} — compression active")
+
+            has_opencode = bool(self.opencode_models.get(tier.lower()))
+            has_pi = bool(self.pi_models.get(tier.lower()))
+            print(f"[TRACE] LOOP: tier={tier} retry={retry_num} has_pi={has_pi} has_opencode={has_opencode} t={time.monotonic():.0f}")
+
+            system_prompt = self._system_prompt_for_backend(
+                tier, task_type, has_feedback=bool(feedback)
+            )
+            result = self._execute_tier_attempt(
+                tier,
+                str(user_prompt),
+                system_prompt,
+                retry_num=retry_num,
+                project_root=project_root,
+                accumulated_files=set(accumulated.keys()),
+                temperature=tier_config.get("temperature", 0.7),
+                timeout_seconds=timeout_seconds,
+            )
+
+            # --- Failure classification (mirrors the loop's counters) ---
+            if not result.get("success"):
+                if has_opencode or has_pi:
+                    backend = "OpenCode" if has_opencode else "PI"
+                    error_msg = result.get('error', 'unknown')
+                    if error_msg in ("OpenCode not installed", "PI not installed"):
+                        # Don't count — not a real attempt. Escalate.
+                        return {
+                            "coder_outcome": "unrecoverable",
+                            "terminal": "unrecoverable",
+                        }
+                    # Recoverable failure — count as an attempt
+                    upd = {
+                        "attempts_total": state["attempts_total"] + 1,
+                        "retries": state["retries"] + 1,
+                        "attempt": retry_num + 1,
+                    }
+                    self.monitor.record_coder_output(
+                        tier=tier,
+                        attempt=upd["retries"],
+                        output_chars=0,
+                        files_written=0,
+                        truncated=False,
+                        exit_code=result.get("exit_code"),
+                    )
+                    stderr_tail = str(result.get('stderr', ''))[-200:] if result.get('stderr') else ''
+                    print(f"Tier {tier} {backend} hard failure "
+                          f"(attempt {upd['retries']}/{state['max_retries']}): {error_msg}")
+                    if result.get("exit_code"):
+                        print(f"Tier {tier} {backend} exited {result.get('exit_code', '?')} — {error_msg}")
+                    if stderr_tail:
+                        print(f"Tier {tier} {backend} stderr tail: {stderr_tail}")
+                    upd["coder_outcome"] = "recoverable"
+                    upd["coder_output"] = ""
+                    upd["coder_written_paths"] = []
+                    upd["tool_result"] = {}
+                    upd["feedback"] = (
+                        f"{backend} PROCESS FAILURE (attempt {upd['retries']}): {error_msg}. "
+                        "Your previous attempt produced no output or crashed. "
+                        "Simplify the task — write fewer files at once, "
+                        "reduce individual file sizes, or split into smaller sub-tasks. "
+                        "Try again with a simpler approach."
+                    )
+                    return upd
+                # Raw LLM HTTP failure (breaks the tier loop immediately)
+                upd = {
+                    "attempts_total": state["attempts_total"] + 1,
+                    "retries": state["retries"] + 1,
+                    "attempt": retry_num + 1,
+                }
+                print(f"Tier {tier} HTTP failure: {result.get('error', 'unknown')}")
+                return {**upd, "coder_outcome": "raw_failure", "terminal": "raw_failure"}
+
+            # Coder produced output — count as a real attempt
+            upd = {
+                "attempts_total": state["attempts_total"] + 1,
+                "retries": state["retries"] + 1,
+                "attempt": retry_num + 1,
+            }
+            if has_opencode or has_pi:
+                self.monitor.record_coder_output(
+                    tier=tier,
+                    attempt=upd["retries"],
+                    output_chars=len(result.get("output", "")),
+                    files_written=len(result.get("written_paths", [])),
+                    truncated=result.get("partial", False),
+                    exit_code=result.get("exit_code"),
+                )
+
+            # --- Tool execution ---
+            if (has_opencode or has_pi) and "written_paths" in result:
+                print(f"[TRACE] A: tool_exec start, {len(result.get('written_paths',[]))} files, t={time.monotonic():.0f}")
+                coder_paths = result.get("written_paths", [])
+                tool_result = {"results": [], "tools_executed": len(coder_paths), "all_succeeded": True}
+                for p in coder_paths:
+                    try:
+                        content = self.file_tools.file_read(p)
+                        bytelen = len(content.get("content", ""))
+                        tool_result["results"].append({
+                            "tool": "file_write", "path": p,
+                            "success": content.get("success", False),
+                            "content": content.get("content", ""),
+                            "bytes": bytelen,
+                        })
+                    except Exception:
+                        tool_result["results"].append({"tool": "file_write", "path": p, "success": False})
+            else:
+                tool_result = self.tool_executor.parse_and_execute_tools(result["output"])
+
+            upd.update({
+                "coder_outcome": "produced",
+                "coder_output": result["output"],
+                "coder_written_paths": list(result.get("written_paths", []) or []),
+                "coder_duration": result.get("duration_seconds", 0.0),
+                "coder_exit_code": result.get("exit_code", 0),
+                "coder_partial": bool(result.get("partial", False)),
+                "tool_result": tool_result,
+                "prompt_chars": len(str(user_prompt)),
+            })
+            return upd
+
+        # --- Node: judge (audit -> judge -> monitor/cost/checkpoint) ---
+        def judge_node(state):
+            import time as _time
+
+            tool_result = state.get("tool_result", {})
+
+            # Integration Audit (Loop 4) — runs BEFORE the Judge.
+            try:
+                from src.core.integration_audit import run_audit, format_findings_for_coder
+
+                audit_files = {}
+                for tr in tool_result.get("results", []):
+                    if tr.get("success") and "content" in tr:
+                        audit_files[tr["path"]] = tr["content"]
+                if audit_files:
+                    task_spec = context.get("task_spec", "")
+                    audit_result = run_audit(
+                        audit_files, task_spec,
+                        project_root=str(project_root or self.project_root),
+                    )
+                    if not audit_result.passed:
+                        errors = [f for f in audit_result.findings if f.severity == "error"]
+                        print(f"[AUDIT] FAILED — {len(errors)} error(s) found "
+                              f"(before Judge evaluation)")
+                        for f in errors[:5]:
+                            print(f"  [{f.category}] {f.file}:{f.line} — "
+                                  f"{f.message[:100]}")
+                        if len(errors) > 5:
+                            print(f"  ... and {len(errors) - 5} more")
+                        fix_prompt = format_findings_for_coder(audit_result)
+                        context["_audit_findings"] = fix_prompt
+                        if "task_spec" in context:
+                            context["task_spec"] = (
+                                fix_prompt + "\n\n---\n\n" + context["task_spec"]
+                            )
+                        # Audit failure routes like a rejection WITHOUT
+                        # touching the feedback var or the verdict (the
+                        # hand-rolled loop continues without either).
+                        return {"task_spec": context.get("task_spec", state["task_spec"])}
+                    else:
+                        wcount = len([f for f in audit_result.findings if f.severity == "warning"])
+                        if wcount:
+                            print(f"[AUDIT] PASSED with {wcount} warning(s)")
+                        else:
+                            print(f"[AUDIT] PASSED — all checks clean")
+            except Exception as e:
+                print(f"[AUDIT] Internal error (non-blocking): {e}")
+
+            # Judge evaluation
+            try:
+                print(f"[TRACE] B: judge start, t={_time.monotonic():.0f}")
+                task_text = context.get("task_spec", task_id)
+                if task_type == "plan":
+                    task_text = f"[PLANNING TASK] Decompose into subtasks: {task_text}"
+
+                eval_output = state.get("coder_output", "")
+                if tool_result.get("results"):
+                    import json as _json
+                    eval_output += "\n\n## Tool Execution Results\n" + _json.dumps(tool_result["results"], indent=2)
+
+                judge = Judge(model=judge_model)
+                eval_kwargs = {"task": str(task_text), "output": eval_output}
+                profile_key = tier_config.get("profile")
+                if profile_key:
+                    eval_kwargs["model_profile_key"] = profile_key
+                task_spec_dict = context.get("spec")
+                if task_spec_dict:
+                    eval_kwargs["spec"] = task_spec_dict
+                verdict = judge.evaluate(**eval_kwargs)
+                print(f"[TRACE] C: judge done, accepted={verdict.accepted}, score={verdict.score:.2f}, t={_time.monotonic():.0f}")
+            except Exception as e:
+                verdict = Verdict(
+                    accepted=False, provisional=False, score=0.0,
+                    critique=f"Judge unavailable: {e}",
+                    checks_passed=[], checks_failed=["judge_unavailable"],
+                )
+
+            self.monitor.record_judge_verdict(
+                tier=tier,
+                attempt=state["retries"],
+                score=verdict.score,
+                accepted=verdict.accepted,
+                provisional=verdict.provisional,
+            )
+
+            health = self.monitor.check_health()
+            if health.severity.name in ("WARN", "ERROR"):
+                print(f"[MONITOR] {health.assessment}")
+                for rec in health.recommendations:
+                    print(f"  → {rec}")
+                if health.escalate_to_principal:
+                    print(f"[MONITOR] ⛔ Pipeline health critical — "
+                          f"escalating to Principal with diagnostics")
+
+            # Cost tracking (observer only, never blocks)
+            try:
+                from src.core.cost import TokenCount
+
+                tokens = TokenCount(
+                    prompt_tokens=state.get("prompt_chars", 0) // 4,
+                    completion_tokens=len(state.get("coder_output", "")) // 4,
+                )
+                self.cost_tracker.record(
+                    task_id, tier, model_name, tokens,
+                    state.get("coder_duration", 0.0),
+                )
+            except Exception:
+                pass
+
+            # Checkpoint after every tier verdict (JSON, for compatibility;
+            # the graph also checkpoints per node via SqliteSaver)
+            print(f"[TRACE] D: checkpoint write, t={_time.monotonic():.0f}")
+            merged_retries = dict(retries_per_tier)
+            merged_retries[tier] = state["retries"]
+            self._write_checkpoint(
+                task_id=task_id,
+                escalation_path=escalation_path + [tier],
+                accumulated_files=state.get("accumulated_files", {}),
+                retries_per_tier=merged_retries,
+                best_output=state.get("best_output", {}),
+                cost_summary=self.cost_tracker.get_summary(),
+                attempts_total=state["attempts_total"],
+                start_time=start_time,
+            )
+
+            upd = {"verdict": verdict_dict(verdict)}
+
+            if verdict.accepted:
+                # Collect file contents for result
+                files = {}
+                for tr in tool_result.get("results", []):
+                    if tr.get("success") and "content" in tr:
+                        files[tr["path"]] = tr["content"]
+
+                # Accumulate files only after judge confirms (disk-verified)
+                import os as _os
+
+                accumulated = dict(state.get("accumulated_files", {}))
+                for p in state.get("coder_written_paths", []):
+                    if _os.path.isfile(p):
+                        accumulated[p] = _os.path.getsize(p)
+                    else:
+                        print(f"  ⚠️  File in written_paths not on disk: {p}")
+
+                upd["files"] = files
+                upd["accumulated_files"] = accumulated
+                upd["best_output"] = {
+                    "tier": tier, "score": verdict.score,
+                    "output": state.get("coder_output", ""), "files": files,
+                }
+                upd["feedback"] = ""
+                return upd
+
+            if verdict.provisional:
+                # Provisional — grant one bonus retry for targeted fixes
+                max_retries = state["max_retries"]
+                if not state.get("provisional_bonus_used"):
+                    upd["provisional_bonus_used"] = True
+                    max_retries += 1
+                    upd["max_retries"] = max_retries
+                print(f"Tier {tier} provisional: {verdict.critique[:200]}")
+                upd["feedback"] = (
+                    "PROVISIONALLY ACCEPTED. Your code is substantially correct. "
+                    "Apply ONLY these targeted corrections — do NOT rewrite working code:\n\n"
+                    + verdict.critique
+                )
+                # Provisional burns one retry slot (retry_num += 1 semantics)
+                upd["attempt"] = state["attempt"] + 1
+                return upd
+
+            # Rejected — save feedback for next retry
+            upd["feedback"] = verdict.critique
+            print(f"Tier {tier} retry {state['attempt']} rejected: {verdict.critique[:200]}")
+
+            # R4: Auto-enable prompt flow debug on first rejection
+            if not self._prompt_flow_logger.enabled:
+                self._prompt_flow_logger.enabled = True
+                self._prompt_flow_logger.task_id = task_id
+                print(f"Prompt flow debug auto-enabled → "
+                      f"~/.mrkrabs/debug/{task_id}/")
+            return upd
+
+        # --- Node: verifier (Runtime Verification, Loop 2) ---
+        def verifier_node(state):
+            from src.core.verifier import RuntimeVerifier
+
+            print(f"[VERIFY] Judge accepted — running runtime verification...")
+            verifier = RuntimeVerifier(
+                project_root=project_root or self.project_root,
+                command=(self.verify_config.command if self.verify_config else None),
+                timeout=(self.verify_config.timeout if self.verify_config else 300),
+                max_retries=(self.verify_config.max_retries if self.verify_config else 3),
+            )
+            files = state.get("files", {})
+            verify_result = verifier.verify(files)
+            if verify_result.passed:
+                print(f"[VERIFY] Runtime verification PASSED "
+                      f"({verify_result.command})")
+                return {"verifier_outcome": "passed"}
+
+            print(f"[VERIFY] Runtime verification FAILED "
+                  f"(exit {verify_result.exit_code})")
+            verify_max = (
+                self.verify_config.max_retries if self.verify_config else 3
+            )
+            retry_num = state["attempt"]
+            if retry_num < verify_max:
+                fix_tier = (
+                    self.verify_config.coder_tier if self.verify_config else "l0-coder"
+                )
+                print(f"[VERIFY] Routing to {fix_tier} for runtime fixes "
+                      f"(attempt {retry_num}/{verify_max})")
+                accumulated = dict(state.get("accumulated_files", {}))
+                for p in list(accumulated.keys()):
+                    if any(p.endswith(os.path.basename(fp)) for fp in files):
+                        del accumulated[p]
+                        print(f"  [VERIFY] Cleared {p} from accumulated set for retry")
+                error_text = "\n".join(verify_result.errors[-20:]) if verify_result.errors else (
+                    f"Tests failed with exit code {verify_result.exit_code}"
+                )
+                fix_context = (
+                    f"## RUNTIME FIX REQUIRED\n\nThe previous implementation "
+                    f"fails at runtime. Fix the errors below and re-submit:"
+                    f"\n\n```\n{error_text}\n```\n\nCommand that failed: "
+                    f"`{verify_result.command}`\n"
+                )
+                if "task_spec" in context:
+                    context["task_spec"] = (
+                        fix_context + "\n---\n" + context["task_spec"]
+                    )
+                # The feedback var is deliberately NOT set here (matches
+                # the hand-rolled loop: the fix travels via task_spec).
+                return {
+                    "attempt": retry_num + 1,
+                    "retries": state["retries"] + 1,
+                    "accumulated_files": accumulated,
+                    "task_spec": context.get("task_spec", state["task_spec"]),
+                    "verifier_outcome": "retry",
+                    "verdict": {
+                        "accepted": False, "provisional": False, "score": 0.0,
+                        "critique": "Runtime verification failed",
+                        "checks_passed": [], "checks_failed": ["verify_failed"],
+                    },
+                }
+
+            print(f"[VERIFY] Max verify retries ({verify_max}) exhausted")
+            return {
+                "terminal": "verify_failed",
+                "verifier_outcome": "exhausted",
+                "verify_result": {
+                    "exit_code": verify_result.exit_code,
+                    "command": verify_result.command,
+                    "errors": verify_result.errors,
+                    "error_summary": verify_result.error_summary,
+                },
+            }
+
+        # --- Node: QA (Behavioral QA, Loop 3) ---
+        def qa_node(state):
+            from src.core.qa_loop import QALoop
+
+            print(f"[QA] Running behavioral QA evaluation...")
+            qa_loop = QALoop(
+                project_root=project_root or self.project_root,
+                judge_model=(self.qa_config.judge_model if self.qa_config else "judge"),
+                coder_tier=(self.qa_config.coder_tier if self.qa_config else "l0-coder"),
+                orchestrator_tier=(self.qa_config.orchestrator_tier if self.qa_config else "l0-planner"),
+                timeout=(self.qa_config.timeout if self.qa_config else 300),
+            )
+            task_spec_str = str(context.get("task_spec", task_id))
+            qa_result = qa_loop.evaluate(
+                task_spec=task_spec_str,
+                files=state.get("files", {}),
+                base_url=(self.qa_config.base_url if self.qa_config else "http://127.0.0.1:5000"),
+            )
+            if not qa_result.passed:
+                print(f"[QA] Behavioral QA FAILED — "
+                      f"{qa_result.gap_report.summary() if qa_result.gap_report else 'unknown'}")
+                gap_report = qa_result.gap_report
+                return {
+                    "terminal": "qa_failed",
+                    "qa_result": {
+                        "total_tests": gap_report.total_tests if gap_report else 0,
+                        "passed": gap_report.passed if gap_report else 0,
+                        "failed": gap_report.failed if gap_report else 0,
+                        "gaps": [
+                            {
+                                "test_name": g.test_name,
+                                "gap_type": g.gap_type,
+                                "target_tier": g.target_tier,
+                                "fix_instruction": g.fix_instruction,
+                                "criticality": g.criticality,
+                            }
+                            for g in (gap_report.gaps if gap_report else [])
+                        ],
+                        "feedback_by_tier": {
+                            tier_name: gap_report.feedback_for_tier(tier_name)
+                            for tier_name in (gap_report.by_tier if gap_report else {})
+                        },
+                    },
+                }
+            print(f"[QA] Behavioral QA PASSED "
+                  f"({qa_result.gap_report.passed}/{qa_result.gap_report.total_tests} tests)")
+            return {}
+
+        # --- Assemble + invoke (resume-aware) ---
+        with SqliteSaver.from_conn_string(str(db_path)) as checkpointer:
+            graph = build_tier_graph(
+                checkpointer,
+                code_node,
+                judge_node,
+                verifier_node if self.verify_enabled else None,
+                qa_node if self.qa_enabled else None,
+            )
+            existing = None
+            try:
+                existing = checkpointer.get_tuple(config)
+            except Exception:
+                existing = None
+            if existing is None:
+                initial = initial_tier_state(
+                    task_id, str(context.get("task_spec", task_id)), tier,
+                    task_type=task_type, judge_model=judge_model,
+                    project_root=project_root or "",
+                    max_retries=max_retries_per_tier,
+                    verify_enabled=self.verify_enabled,
+                    qa_enabled=self.qa_enabled,
+                    attempts_total=attempts_total,
+                    accumulated_files=accumulated_files,
+                    best_output=best_output,
+                )
+                result = graph.invoke(initial, config)
+            else:
+                result = graph.invoke(None, config)
+            # Normal completion: drop the thread so the NEXT independent
+            # execute_with_judge call for this task starts fresh. Only a
+            # crash (exception before this line) leaves the thread for
+            # resume.
+            try:
+                checkpointer.delete_thread(thread_id)
+            except Exception:
+                pass
+            return result
+
     def execute_with_judge(
         self,
         task_id: str,
@@ -2280,602 +2835,103 @@ class LLMOrchestrator:
                 escalation_path.append(tier)
                 continue  # skip to next tier
 
-            # --- Retry loop ---
-            retry_num = 1
-            provisional_bonus = False
-            while retry_num <= max_retries_per_tier:
-                # --- FailUp mid-retry check ---
-                check_mesh_fail_up()
-                if is_fail_up_active():
-                    print(f"[FAIL_UP] Aborting tier {tier} mid-retry — bumping up one level")
-                    clear_fail_up()
-                    fail_up_aborted = True
-                    retries_per_tier[tier] = retry_num - 1
-                    break  # exit retry loop, go to next tier
+            # --- Tier retry loop (LangGraph-driven) ---
+            # The per-tier retry/escalate/review loop runs as a
+            # checkpointed graph (src/core/handoff_graph.py + the
+            # _run_tier_graph method). Outer gates (principal,
+            # circuit breaker, fail-up entry, failure actions) and the
+            # post-tier handling below are unchanged from the
+            # hand-rolled loop; only loop control moved.
+            tier_state = self._run_tier_graph(
+                task_id=task_id,
+                tier=tier,
+                context=context,
+                task_type=task_type,
+                tier_config=tier_config,
+                judge_model=judge_model,
+                project_root=project_root,
+                timeout_seconds=timeout_seconds,
+                max_retries_per_tier=max_retries_per_tier,
+                attempts_total=attempts_total,
+                accumulated_files=accumulated_files,
+                best_output=best_output,
+                retries_per_tier=retries_per_tier,
+                escalation_path=escalation_path,
+                start_time=start_time,
+            )
+            attempts_total = tier_state["attempts_total"]
+            retries_per_tier[tier] = tier_state["retries"]
+            accumulated_files = tier_state["accumulated_files"]
+            best_output = tier_state["best_output"]
+            max_retries_per_tier = tier_state["max_retries"]
+            fail_up_aborted = bool(tier_state.get("fail_up_aborted"))
+            feedback = tier_state.get("feedback", "")
+            _verdict_dict = tier_state.get("verdict")
+            verdict = Verdict(**_verdict_dict) if _verdict_dict else None
 
-                # ── Context compression (Article Pillar 2) ───────────────────────────
-                # Assemble the prompt with compression: keep task spec verbatim,
-                # summarize older judge feedback, compress accumulated files when >5.
-                task_spec = str(context.get("task_spec", task_id))
+            if (
+                verdict is not None
+                and verdict.accepted
+                and tier_state.get("terminal") not in ("verify_failed", "qa_failed")
+            ):
+                duration_seconds = time.monotonic() - start_mono
+                self._clear_checkpoint(task_id)
+                self._run_self_improve_if_enabled(task_id)
+                return {
+                    "task_id": task_id,
+                    "success": True,
+                    "output": tier_state.get("coder_output", ""),
+                    "score": verdict.score if verdict else 0.0,
+                    "files": tier_state.get("files", {}),
+                    "tier_used": tier,
+                    "attempts_total": attempts_total,
+                    "retries_per_tier": retries_per_tier,
+                    "verdict": verdict,
+                    "cost_summary": self.cost_tracker.get_summary(),
+                    "escalation_path": escalation_path + [tier],
+                    "duration_seconds": duration_seconds,
+                    "tool_results": tier_state.get("tool_result", {}),
+                }
 
-                # Collect feedback history for this tier across retries
-                if not hasattr(self, '_feedback_history'):
-                    self._feedback_history: dict[str, list[str]] = {}
-                tier_fb_key = f"{task_id}:{tier}"
-                if tier_fb_key not in self._feedback_history:
-                    self._feedback_history[tier_fb_key] = []
-                if feedback and feedback not in self._feedback_history[tier_fb_key]:
-                    self._feedback_history[tier_fb_key].append(feedback)
+            if tier_state.get("terminal") == "verify_failed":
+                duration_seconds = time.monotonic() - start_mono
+                return {
+                    "task_id": task_id,
+                    "success": False,
+                    "output": tier_state.get("coder_output", ""),
+                    "score": verdict.score if verdict else 0.0,
+                    "files": tier_state.get("files", {}),
+                    "tier_used": tier,
+                    "attempts_total": attempts_total,
+                    "retries_per_tier": retries_per_tier,
+                    "verdict": verdict,
+                    "cost_summary": self.cost_tracker.get_summary(),
+                    "escalation_path": escalation_path + [tier],
+                    "duration_seconds": duration_seconds,
+                    "tool_results": tier_state.get("tool_result", {}),
+                    "verify_failed": True,
+                    "verify_result": tier_state.get("verify_result"),
+                }
 
-                feedback_history = self._feedback_history.get(tier_fb_key, [])
-
-                # Model profile prepend
-                model_key = tier_config.get("profile")
-                prepend = get_prepend(model_key) if model_key else ""
-
-                # Pass-through: only inject accumulated files on first attempt of a new tier
-                acc_files = accumulated_files if retry_num == 1 and accumulated_files else None
-
-                user_prompt = compress_history(
-                    task_spec=task_spec,
-                    accumulated_files=acc_files,
-                    feedback_history=feedback_history,
-                    prepend=prepend,
-                )
-
-                # ── Context fill observability ─────────────────────────────────────
-                fill = estimate_context_fill(task_spec, acc_files, feedback_history)
-                self.monitor.record_context_fill(tier, fill)
-                if fill > 0.8:
-                    print(f"  ⚠️  Context fill: {fill:.0%} — compression active")
-
-                # Route through OpenCode (default), PI (fallback), or raw LLM
-                has_opencode = bool(self.opencode_models.get(tier.lower()))
-                has_pi = bool(self.pi_models.get(tier.lower()))
-                print(f"[TRACE] LOOP: tier={tier} retry={retry_num} has_pi={has_pi} has_opencode={has_opencode} t={time.monotonic():.0f}")
-
-                # ── Fix-mode prompt selection (Gap 4) ────────────────────────
-                # On retry with feedback, use the fix prompt (targeted, minimal changes).
-                # On fresh attempt, use the build prompt.
-                if feedback:
-                    current_sp = self._get_agent_system_prompt("fix")
-                    current_pi_sp = self._get_pi_system_prompt("fix")
-                else:
-                    current_sp = agent_system_prompt
-                    current_pi_sp = pi_system_prompt
-
-                if has_opencode:
-                    result = self._execute_opencode_tier(
-                        tier,
-                        str(user_prompt),
-                        system_prompt=current_sp,
-                        retry_num=retry_num,
-                        project_root=project_root,
-                    )
-                elif has_pi:
-                    result = self._execute_pi_tier(
-                        tier,
-                        str(user_prompt),
-                        system_prompt=current_pi_sp,
-                        retry_num=retry_num,
-                        project_root=project_root,
-                        accumulated_files=set(accumulated_files.keys()),
-                    )
-                else:
-                    result = self.call_llm_with_retry(
-                        tier, agent_system_prompt, str(user_prompt),
-                        temperature=tier_config.get("temperature", 0.7),
-                        timeout_seconds=timeout_seconds,
-                    )
-
-                # ── Increment counters ONLY after coder output is confirmed ──
-                # Previously these fired BEFORE the success check, so a crash
-                # burned a retry slot and pollute retry counters. Now counters
-                # advance only on real attempts (output produced OR recoverable
-                # failure). Unrecoverable failures (PI/OpenCode not installed)
-                # don't consume any counters — they escalate immediately.
-
-                if not result["success"]:
-                    if has_opencode or has_pi:
-                        backend = "OpenCode" if has_opencode else "PI"
-                        error_msg = result.get('error', 'unknown')
-                        is_unrecoverable = error_msg in (
-                            "OpenCode not installed", "PI not installed"
-                        )
-                        if is_unrecoverable:
-                            # Don't count — not a real attempt. Escalate.
-                            break
-                        # Recoverable failure — count as an attempt
-                        attempts_total += 1
-                        retries_per_tier[tier] += 1
-                        retry_num += 1
-                        # ── Pipeline monitor: record coder output ──────────
-                        self.monitor.record_coder_output(
-                            tier=tier,
-                            attempt=retries_per_tier[tier],
-                            output_chars=0,
-                            files_written=0,
-                            truncated=False,
-                            exit_code=result.get("exit_code"),
-                        )
-                        stderr_tail = str(result.get('stderr', ''))[-200:] if result.get('stderr') else ''
-                        print(f"Tier {tier} {backend} hard failure "
-                              f"(attempt {retries_per_tier[tier]}/{max_retries_per_tier}): {error_msg}")
-                        if result.get("exit_code"):
-                            print(f"Tier {tier} {backend} exited {result.get('exit_code', '?')} — {error_msg}")
-                        if stderr_tail:
-                            print(f"Tier {tier} {backend} stderr tail: {stderr_tail}")
-                        if retry_num <= max_retries_per_tier:
-                            feedback = (
-                                f"{backend} PROCESS FAILURE (attempt {retries_per_tier[tier]}): {error_msg}. "
-                                "Your previous attempt produced no output or crashed. "
-                                "Simplify the task — write fewer files at once, "
-                                "reduce individual file sizes, or split into smaller sub-tasks. "
-                                "Try again with a simpler approach."
-                            )
-                            continue
-                        break  # exhausted retries
-                    else:
-                        # Raw LLM HTTP failure
-                        attempts_total += 1
-                        retries_per_tier[tier] += 1
-                        retry_num += 1
-                        print(f"Tier {tier} HTTP failure: {result.get('error', 'unknown')}")
-                        break
-
-                # ── Coder produced output — count as a real attempt ──
-                attempts_total += 1
-                retries_per_tier[tier] += 1
-                retry_num += 1
-
-                # ── Pipeline monitor: record coder output ──────────
-                if has_opencode or has_pi:
-                    self.monitor.record_coder_output(
-                        tier=tier,
-                        attempt=retries_per_tier[tier],
-                        output_chars=len(result.get("output", "")),
-                        files_written=len(result.get("written_paths", [])),
-                        truncated=result.get("partial", False),
-                        exit_code=result.get("exit_code"),
-                    )
-
-                import time as _time
-
-                # --- Tool execution ---
-                if (has_opencode or has_pi) and "written_paths" in result:
-                    print(f"[TRACE] A: tool_exec start, {len(result.get('written_paths',[]))} files, t={_time.monotonic():.0f}")
-                    # OpenCode/PI wrote files — read them back for judge evaluation
-                    coder_paths = result.get("written_paths", [])
-                    tool_result = {"results": [], "tools_executed": len(coder_paths), "all_succeeded": True}
-                    for p in coder_paths:
-                        try:
-                            content = self.file_tools.file_read(p)
-                            bytelen = len(content.get("content", ""))
-                            tool_result["results"].append({
-                                "tool": "file_write", "path": p,
-                                "success": content.get("success", False),
-                                "content": content.get("content", ""),
-                                "bytes": bytelen,
-                            })
-                        except Exception:
-                            tool_result["results"].append({"tool": "file_write", "path": p, "success": False})
-                else:
-                    tool_result = self.tool_executor.parse_and_execute_tools(result["output"])
-
-                # ── Integration Audit (Loop 4: audit) ────────────────────
-                # Runs BEFORE the Judge. Statically checks for wiring gaps,
-                # stubs, import violations, and dead error paths.
-                # Deterministic, AST-based, zero LLM cost.
-                # On failure, routes findings back to the coder for fixes.
-                try:
-                    from src.core.integration_audit import (
-                        run_audit, format_findings_for_coder,
-                    )
-                    audit_files = {}
-                    for tr in tool_result.get("results", []):
-                        if tr.get("success") and "content" in tr:
-                            audit_files[tr["path"]] = tr["content"]
-                    if audit_files:
-                        task_spec = context.get("task_spec", "")
-                        audit_result = run_audit(
-                            audit_files, task_spec,
-                            project_root=str(project_root or self.project_root),
-                        )
-                        if not audit_result.passed:
-                            errors = [f for f in audit_result.findings
-                                     if f.severity == "error"]
-                            print(f"[AUDIT] FAILED — {len(errors)} error(s) found "
-                                  f"(before Judge evaluation)")
-                            for f in errors[:5]:
-                                print(f"  [{f.category}] {f.file}:{f.line} — "
-                                      f"{f.message[:100]}")
-                            if len(errors) > 5:
-                                print(f"  ... and {len(errors) - 5} more")
-
-                            # Route to coder with fix instructions
-                            fix_prompt = format_findings_for_coder(audit_result)
-                            if retry_num <= max_retries_per_tier:
-                                print(f"[AUDIT] Routing to {tier} for fixes "
-                                      f"(retry {retry_num}/{max_retries_per_tier})")
-                                # Inject findings into context so coder sees them
-                                context["_audit_findings"] = fix_prompt
-                                if "task_spec" in context:
-                                    context["task_spec"] = (
-                                        fix_prompt + "\n\n---\n\n"
-                                        + context["task_spec"]
-                                    )
-                                continue  # Re-enter the tier loop
-                            else:
-                                print(f"[AUDIT] Max retries ({max_retries_per_tier}) "
-                                      f"exceeded — escalating")
-                                break  # Escalate to next tier
-                        else:
-                            wcount = len([f for f in audit_result.findings
-                                         if f.severity == "warning"])
-                            if wcount:
-                                print(f"[AUDIT] PASSED with {wcount} warning(s)")
-                            else:
-                                print(f"[AUDIT] PASSED — all checks clean")
-                except Exception as e:
-                    # Audit shouldn't block the pipeline
-                    print(f"[AUDIT] Internal error (non-blocking): {e}")
-
-                # --- Judge evaluation ---
-                try:
-                    print(f"[TRACE] B: judge start, t={_time.monotonic():.0f}")
-                    task_text = context.get("task_spec", task_id)
-                    # For plan tasks, prepend a planning indicator so detect_task_type
-                    # correctly routes to PLAN_CRITERIA instead of CODE_CRITERIA
-                    if task_type == "plan":
-                        task_text = f"[PLANNING TASK] Decompose into subtasks: {task_text}"
-                    
-                    # Build evaluation output: include tool execution results
-                    eval_output = result["output"]
-                    if tool_result.get("results"):
-                        import json as _json
-                        eval_output += "\n\n## Tool Execution Results\n" + _json.dumps(tool_result["results"], indent=2)
-                    
-                    judge = Judge(model=judge_model)
-                    eval_kwargs = {
-                        "task": str(task_text),
-                        "output": eval_output,
-                    }
-                    profile_key = tier_config.get("profile")
-                    if profile_key:
-                        eval_kwargs["model_profile_key"] = profile_key
-                    task_spec_dict = context.get("spec")
-                    if task_spec_dict:
-                        eval_kwargs["spec"] = task_spec_dict
-                    verdict = judge.evaluate(**eval_kwargs)
-                    print(f"[TRACE] C: judge done, accepted={verdict.accepted}, score={verdict.score:.2f}, t={_time.monotonic():.0f}")
-                except Exception as e:
-                    # Judge unavailable — degrade gracefully, treat as rejection
-                    verdict = Verdict(
-                        accepted=False, provisional=False, score=0.0,
-                        critique=f"Judge unavailable: {e}",
-                        checks_passed=[], checks_failed=["judge_unavailable"],
-                    )
-
-                # ── Pipeline monitor: record judge verdict ─────────
-                self.monitor.record_judge_verdict(
-                    tier=tier,
-                    attempt=retries_per_tier[tier],
-                    score=verdict.score,
-                    accepted=verdict.accepted,
-                    provisional=verdict.provisional,
-                )
-
-                # ── Pipeline monitor: self-interrogation ───────────
-                health = self.monitor.check_health()
-                if health.severity.name in ("WARN", "ERROR"):
-                    print(f"[MONITOR] {health.assessment}")
-                    for rec in health.recommendations:
-                        print(f"  → {rec}")
-                if health.escalate_to_principal:
-                    print(f"[MONITOR] ⛔ Pipeline health critical — "
-                          f"escalating to Principal with diagnostics")
-                    # Anomalies are surfaced in the Principal context
-
-                # --- Cost tracking (observer only, never blocks) ---
-                try:
-                    from src.core.cost import TokenCount
-                    tier_mod = model_name
-                    tokens = TokenCount(
-                        prompt_tokens=len(str(user_prompt)) // 4,
-                        completion_tokens=len(result.get("output", "")) // 4,
-                    )
-                    self.cost_tracker.record(
-                        task_id, tier, tier_mod, tokens,
-                        result.get("duration_seconds", 0.0),
-                    )
-                except Exception:
-                    pass  # cost tracking failure should never block execution
-
-                # ── Checkpoint after every tier verdict ──────────────────────────
-                print(f"[TRACE] D: checkpoint write, t={_time.monotonic():.0f}")
-                self._write_checkpoint(
-                    task_id=task_id,
-                    escalation_path=escalation_path + [tier],
-                    accumulated_files=accumulated_files,
-                    retries_per_tier=retries_per_tier,
-                    best_output=best_output,
-                    cost_summary=self.cost_tracker.get_summary(),
-                    attempts_total=attempts_total,
-                    start_time=start_time,
-                )
-
-                # --- Verdict ---
-                if verdict.accepted:
-                    # Collect file contents for result
-                    files = {}
-                    for tr in tool_result.get("results", []):
-                        if tr.get("success") and "content" in tr:
-                            files[tr["path"]] = tr["content"]
-
-                    # ── Accumulate files only after judge confirms (R1+) ──
-                    # Previously these were added before the judge, meaning
-                    # rejected files polluted the accumulated set and blocked
-                    # retries from overwriting them. Now only judge-verified
-                    # files enter the set. Also verify files are actually on disk.
-                    import os as _os
-                    for p in result.get("written_paths", []):
-                        if _os.path.isfile(p):
-                            fsize = _os.path.getsize(p)
-                            accumulated_files[p] = fsize
-                        else:
-                            print(f"  ⚠️  File in written_paths not on disk: {p}")
-
-                    best_output = {
-                        "tier": tier, "score": verdict.score,
-                        "output": result["output"], "files": files,
-                    }
-
-                    # ── Runtime Verification (Loop 2: verify) ──────────────────
-                    # After the Judge accepts, actually RUN the code to catch
-                    # runtime errors (ImportError, SyntaxError, logic bugs, etc.)
-                    # before declaring success. This is Steinberger Loop 2 of 4:
-                    #   build → verify → fix → scale
-                    if self.verify_enabled:
-                        print(f"[VERIFY] Judge accepted — "
-                              f"running runtime verification...")
-                        from src.core.verifier import RuntimeVerifier
-                        verifier = RuntimeVerifier(
-                            project_root=project_root or self.project_root,
-                            command=(
-                                self.verify_config.command
-                                if self.verify_config else None
-                            ),
-                            timeout=(
-                                self.verify_config.timeout
-                                if self.verify_config else 300
-                            ),
-                            max_retries=(
-                                self.verify_config.max_retries
-                                if self.verify_config else 3
-                            ),
-                        )
-                        verify_result = verifier.verify(files)
-                        if not verify_result.passed:
-                            print(f"[VERIFY] Runtime verification FAILED "
-                                  f"(exit {verify_result.exit_code})")
-
-                            # ── Loop 2 retry: fix → verify → repeat ──
-                            # Don't bail — route the failure back to the coder
-                            # for targeted fixes, then re-verify.
-                            verify_max = (
-                                self.verify_config.max_retries
-                                if self.verify_config else 3
-                            )
-                            fix_tier = (
-                                self.verify_config.coder_tier
-                                if self.verify_config else "l0-coder"
-                            )
-
-                            if retry_num < verify_max:
-                                print(f"[VERIFY] Routing to {fix_tier} for "
-                                      f"runtime fixes "
-                                      f"(attempt {retry_num}/{verify_max})")
-                                # Clear accumulated_files for failing paths
-                                # so the coder can rewrite them on retry
-                                for p in list(accumulated_files.keys()):
-                                    if any(
-                                        p.endswith(os.path.basename(fp))
-                                        for fp in files
-                                    ):
-                                        del accumulated_files[p]
-                                        print(f"  [VERIFY] Cleared {p} from "
-                                              f"accumulated set for retry")
-                                # Inject failure output into task spec
-                                error_text = "\n".join(
-                                    verify_result.errors[-20:]
-                                ) if verify_result.errors else (
-                                    f"Tests failed with exit code "
-                                    f"{verify_result.exit_code}"
-                                )
-                                fix_context = (
-                                    f"## RUNTIME FIX REQUIRED\n\n"
-                                    f"The previous implementation fails at "
-                                    f"runtime. Fix the errors below and "
-                                    f"re-submit:\n\n```\n{error_text}\n```\n\n"
-                                    f"Command that failed: "
-                                    f"`{verify_result.command}`\n"
-                                )
-                                if "task_spec" in context:
-                                    context["task_spec"] = (
-                                        fix_context + "\n---\n"
-                                        + context["task_spec"]
-                                    )
-                                retry_num += 1
-                                retries_per_tier[tier] += 1
-                                continue  # Re-enter the tier retry loop
-                            else:
-                                print(f"[VERIFY] Max verify retries "
-                                      f"({verify_max}) exhausted")
-                                duration_seconds = (
-                                    time.monotonic() - start_mono
-                                )
-                                return {
-                                    "task_id": task_id,
-                                    "success": False,
-                                    "output": result["output"],
-                                    "score": verdict.score,
-                                    "files": files,
-                                    "tier_used": tier,
-                                    "attempts_total": attempts_total,
-                                    "retries_per_tier": retries_per_tier,
-                                    "verdict": verdict,
-                                    "cost_summary": (
-                                        self.cost_tracker.get_summary()
-                                    ),
-                                    "escalation_path": (
-                                        escalation_path + [tier]
-                                    ),
-                                    "duration_seconds": duration_seconds,
-                                    "tool_results": tool_result,
-                                    "verify_failed": True,
-                                    "verify_result": {
-                                        "exit_code": (
-                                            verify_result.exit_code
-                                        ),
-                                        "command": verify_result.command,
-                                        "errors": verify_result.errors,
-                                        "error_summary": (
-                                            verify_result.error_summary
-                                        ),
-                                    },
-                                }
-                        print(f"[VERIFY] Runtime verification PASSED "
-                              f"({verify_result.command})")
-
-                    # ── Behavioral QA (Loop 3: fix) ───────────────────────────
-                    # After verify passes (or if verify is disabled), run
-                    # behavioral tests against the live system. This catches
-                    # gaps between the spec and what was actually built:
-                    # wrong behavior, missing features, architectural problems.
-                    #
-                    # Failures are classified and routed:
-                    #   implementation_bugs → coder tier
-                    #   missing_features   → orchestrator (re-plan)
-                    #   architectural      → principal
-                    if self.qa_enabled:
-                        print(f"[QA] Running behavioral QA evaluation...")
-                        from src.core.qa_loop import QALoop
-                        qa_loop = QALoop(
-                            project_root=project_root or self.project_root,
-                            judge_model=(
-                                self.qa_config.judge_model
-                                if self.qa_config else "judge"
-                            ),
-                            coder_tier=(
-                                self.qa_config.coder_tier
-                                if self.qa_config else "l0-coder"
-                            ),
-                            orchestrator_tier=(
-                                self.qa_config.orchestrator_tier
-                                if self.qa_config else "l0-planner"
-                            ),
-                            timeout=(
-                                self.qa_config.timeout
-                                if self.qa_config else 300
-                            ),
-                        )
-                        task_spec_str = str(context.get("task_spec", task_id))
-                        qa_result = qa_loop.evaluate(
-                            task_spec=task_spec_str,
-                            files=files,
-                            base_url=(
-                                self.qa_config.base_url
-                                if self.qa_config else "http://127.0.0.1:5000"
-                            ),
-                        )
-                        if not qa_result.passed:
-                            print(f"[QA] Behavioral QA FAILED — "
-                                  f"{qa_result.gap_report.summary() if qa_result.gap_report else 'unknown'}")
-                            duration_seconds = time.monotonic() - start_mono
-                            gap_report = qa_result.gap_report
-                            return {
-                                "task_id": task_id,
-                                "success": False,
-                                "output": result["output"],
-                                "score": verdict.score,
-                                "files": files,
-                                "tier_used": tier,
-                                "attempts_total": attempts_total,
-                                "retries_per_tier": retries_per_tier,
-                                "verdict": verdict,
-                                "cost_summary": self.cost_tracker.get_summary(),
-                                "escalation_path": escalation_path + [tier],
-                                "duration_seconds": duration_seconds,
-                                "tool_results": tool_result,
-                                "qa_failed": True,
-                                "qa_result": {
-                                    "total_tests": gap_report.total_tests if gap_report else 0,
-                                    "passed": gap_report.passed if gap_report else 0,
-                                    "failed": gap_report.failed if gap_report else 0,
-                                    "gaps": [
-                                        {
-                                            "test_name": g.test_name,
-                                            "gap_type": g.gap_type,
-                                            "target_tier": g.target_tier,
-                                            "fix_instruction": g.fix_instruction,
-                                            "criticality": g.criticality,
-                                        }
-                                        for g in (gap_report.gaps if gap_report else [])
-                                    ],
-                                    "feedback_by_tier": {
-                                        tier_name: gap_report.feedback_for_tier(tier_name)
-                                        for tier_name in (gap_report.by_tier if gap_report else {})
-                                    },
-                                },
-                            }
-                        print(f"[QA] Behavioral QA PASSED "
-                              f"({qa_result.gap_report.passed}/{qa_result.gap_report.total_tests} tests)")
-
-                    duration_seconds = time.monotonic() - start_mono
-                    self._clear_checkpoint(task_id)
-                    self._run_self_improve_if_enabled(task_id)
-                    return {
-                        "task_id": task_id,
-                        "success": True,
-                        "output": result["output"],
-                        "score": verdict.score,
-                        "files": files,
-                        "tier_used": tier,
-                        "attempts_total": attempts_total,
-                        "retries_per_tier": retries_per_tier,
-                        "verdict": verdict,
-                        "cost_summary": self.cost_tracker.get_summary(),
-                        "escalation_path": escalation_path + [tier],
-                        "duration_seconds": duration_seconds,
-                        "tool_results": tool_result,
-                    }
-
-                if verdict.provisional:
-                    # Provisional — grant one bonus retry for targeted fixes
-                    if not provisional_bonus:
-                        provisional_bonus = True
-                        max_retries_per_tier += 1  # bonus round for polish
-                    print(f"Tier {tier} provisional: {verdict.critique[:200]}")
-                    feedback = (
-                        "PROVISIONALLY ACCEPTED. Your code is substantially correct. "
-                        "Apply ONLY these targeted corrections — do NOT rewrite working code:\n\n"
-                        + verdict.critique
-                    )
-                    retry_num += 1
-                    continue
-
-                # Rejected — save feedback for next retry
-                feedback = verdict.critique
-                print(f"Tier {tier} retry {retry_num} rejected: {verdict.critique[:200]}")
-
-                # R4: Auto-enable prompt flow debug on first rejection
-                # so the user gets diagnostic dumps without manual env-var setup.
-                if not self._prompt_flow_logger.enabled:
-                    self._prompt_flow_logger.enabled = True
-                    self._prompt_flow_logger.task_id = task_id
-                    print(f"Prompt flow debug auto-enabled → "
-                          f"~/.mrkrabs/debug/{task_id}/")
-
+            if tier_state.get("terminal") == "qa_failed":
+                duration_seconds = time.monotonic() - start_mono
+                return {
+                    "task_id": task_id,
+                    "success": False,
+                    "output": tier_state.get("coder_output", ""),
+                    "score": verdict.score if verdict else 0.0,
+                    "files": tier_state.get("files", {}),
+                    "tier_used": tier,
+                    "attempts_total": attempts_total,
+                    "retries_per_tier": retries_per_tier,
+                    "verdict": verdict,
+                    "cost_summary": self.cost_tracker.get_summary(),
+                    "escalation_path": escalation_path + [tier],
+                    "duration_seconds": duration_seconds,
+                    "tool_results": tier_state.get("tool_result", {}),
+                    "qa_failed": True,
+                    "qa_result": tier_state.get("qa_result"),
+                }
             # All retries exhausted for this tier (or fail_up aborted)
             # ── Clean up per-tier feedback history ──────────────────────
             tier_fb_key = f"{task_id}:{tier}"
